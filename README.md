@@ -1,5 +1,7 @@
 # Enbridge SCM Workshop — Databricks Enablement
 
+[![Databricks](https://img.shields.io/badge/Databricks-DABs-red)](https://docs.databricks.com)
+
 A Declarative Automation Bundle (DAB) for the Enbridge Supply Chain Management
 team's Databricks enablement training.
 
