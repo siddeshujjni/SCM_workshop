@@ -1,0 +1,38 @@
+resources:
+  jobs:
+    scm_training_setup:
+      name: Enbridge SCM - Training Setup (Bronze to Gold)
+      description: >
+        Runs the Lesson 2 notebook end-to-end to create all Bronze, Silver,
+        and Gold tables for the Enbridge SCM enablement workshop.
+      tasks:
+        - task_key: lesson_02_pipeline
+          notebook_task:
+            notebook_path: ../src/notebooks/Lesson_02_Building_Data_Pipelines.ipynb
+            base_parameters:
+              catalog: ${var.catalog}
+              schema: ${var.schema}
+      parameters:
+        - name: catalog
+          default: ${var.catalog}
+        - name: schema
+          default: ${var.schema}
+      permissions:
+        - level: CAN_VIEW
+          group_name: users
+
+    scm_pipeline_refresh:
+      name: Enbridge SCM - Pipeline Refresh
+      description: >
+        Runs the Lakeflow SDP pipeline to refresh Bronze, Silver, Gold tables
+        incrementally.
+      tasks:
+        - task_key: run_pipeline
+          pipeline_task:
+            pipeline_id: ${resources.pipelines.scm_preferred_supplier_pipeline.id}
+      schedule:
+        quartz_cron_expression: 0 0 6 * * ?
+        timezone_id: America/Toronto
+      permissions:
+        - level: CAN_VIEW
+          group_name: users

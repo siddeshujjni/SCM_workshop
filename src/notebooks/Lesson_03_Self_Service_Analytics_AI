@@ -1,0 +1,773 @@
+# Databricks notebook source
+# DBTITLE 1,Lesson 3 Title
+# MAGIC %md
+# MAGIC # Lesson 3 — Enabling Self-Service Analytics & AI for Business Users
+# MAGIC
+# MAGIC **Enbridge Supply Chain Management — Databricks Enablement Workshop**
+# MAGIC
+# MAGIC ---
+# MAGIC
+# MAGIC ### What you'll learn in this lesson
+# MAGIC
+# MAGIC | Section | Topic | Duration |
+# MAGIC |---------|-------|---------|
+# MAGIC | **A** | Dashboards & Visualizations | ~30 min |
+# MAGIC | **B** | Designing Genie Q&A Experiences | ~30 min |
+# MAGIC | **C** | MLflow for Model Lifecycle Management | ~30 min |
+# MAGIC | **D** | Agentic AI & Generative AI with Mosaic AI | ~30 min |
+# MAGIC | **E** | Databricks One for Self-Service Delivery | ~15 min |
+# MAGIC | **F** | End-User Access, Security & Governance | ~15 min |
+# MAGIC
+# MAGIC ### Prerequisites
+# MAGIC * Lesson 2 completed (Gold tables created in `enbridge_scm` schema)
+# MAGIC * Tables available: `gold_regional_supplier_coverage`, `gold_agreement_summary`, `gold_contract_analytics`, `silver_preferred_suppliers`, `silver_agreements`
+
+# COMMAND ----------
+
+# DBTITLE 1,Setup: Configure Catalog and Schema
+# ── Configuration (same as Lesson 2) ──────────────────────────────────────
+dbutils.widgets.text("catalog", "serverless_stable_qr9if1_catalog", "1) Catalog")
+dbutils.widgets.text("schema", "enbridge_scm", "2) Schema")
+
+CATALOG = dbutils.widgets.get("catalog").strip()
+SCHEMA  = dbutils.widgets.get("schema").strip()
+
+spark.sql(f"USE CATALOG `{CATALOG}`")
+spark.sql(f"USE SCHEMA `{SCHEMA}`")
+
+print(f"Working in: {CATALOG}.{SCHEMA}")
+
+# Verify Gold tables exist from Lesson 2
+for tbl in ['gold_regional_supplier_coverage', 'gold_agreement_summary', 'gold_contract_analytics', 'silver_preferred_suppliers', 'silver_agreements']:
+    count = spark.table(tbl).count()
+    print(f"  ✅ {tbl}: {count:,} rows")
+
+# COMMAND ----------
+
+# DBTITLE 1,Section A Header
+# MAGIC %md
+# MAGIC ---
+# MAGIC # Section A — Dashboards & Visualizations
+# MAGIC
+# MAGIC > **Goal:** Build clear, interactive dashboards on Gold-level data and publish them
+# MAGIC > so business users can explore key metrics independently.
+# MAGIC
+# MAGIC ### Best Practices for SCM Dashboards
+# MAGIC * **Use Gold tables only** — pre-aggregated, governed, performant
+# MAGIC * **SQL Warehouse** as compute — fastest for dashboard queries
+# MAGIC * **Parameterize** — let users filter by BU, region, time period
+# MAGIC * **Keep it simple** — 5-7 key visualizations per dashboard page
+# MAGIC * **Publish with access controls** — share read-only with business users
+
+# COMMAND ----------
+
+# DBTITLE 1,A1: Dashboard query - Supplier coverage by BU
+# MAGIC %sql
+# MAGIC -- ============================================================
+# MAGIC -- DASHBOARD QUERY 1: Supplier Coverage by Business Unit
+# MAGIC -- ============================================================
+# MAGIC -- This query powers a bar chart showing how many preferred suppliers
+# MAGIC -- each business unit has, split by category managed vs regional sourcing.
+# MAGIC
+# MAGIC SELECT 
+# MAGIC   business_unit_name,
+# MAGIC   supplier_type,
+# MAGIC   SUM(unique_suppliers) AS total_unique_suppliers
+# MAGIC FROM gold_regional_supplier_coverage
+# MAGIC GROUP BY business_unit_name, supplier_type
+# MAGIC ORDER BY total_unique_suppliers DESC;
+
+# COMMAND ----------
+
+# DBTITLE 1,A1: Dashboard query - Regional heatmap
+# MAGIC %sql
+# MAGIC -- ============================================================
+# MAGIC -- DASHBOARD QUERY 2: Regional Supplier Distribution
+# MAGIC -- ============================================================
+# MAGIC -- Powers a regional heatmap or treemap visualization
+# MAGIC
+# MAGIC SELECT 
+# MAGIC   region,
+# MAGIC   bu_code,
+# MAGIC   business_unit_name,
+# MAGIC   SUM(unique_suppliers) AS suppliers,
+# MAGIC   SUM(total_assignments) AS total_assignments
+# MAGIC FROM gold_regional_supplier_coverage
+# MAGIC GROUP BY region, bu_code, business_unit_name
+# MAGIC ORDER BY suppliers DESC;
+
+# COMMAND ----------
+
+# DBTITLE 1,A1: Dashboard query - Agreement status
+# MAGIC %sql
+# MAGIC -- ============================================================
+# MAGIC -- DASHBOARD QUERY 3: Agreement Status Overview
+# MAGIC -- ============================================================
+# MAGIC -- Powers a donut chart or KPI cards showing agreement health
+# MAGIC
+# MAGIC SELECT 
+# MAGIC   document_type,
+# MAGIC   agreement_status,
+# MAGIC   total_agreements,
+# MAGIC   unique_suppliers,
+# MAGIC   total_contracts
+# MAGIC FROM gold_agreement_summary
+# MAGIC ORDER BY total_agreements DESC;
+
+# COMMAND ----------
+
+# DBTITLE 1,A1: Dashboard query - Contract analytics
+# MAGIC %sql
+# MAGIC -- ============================================================
+# MAGIC -- DASHBOARD QUERY 4: Contract Analytics by Business Unit
+# MAGIC -- ============================================================
+# MAGIC -- Powers a stacked bar chart of contract counts by BU and status
+# MAGIC
+# MAGIC SELECT 
+# MAGIC   business_unit,
+# MAGIC   contract_status,
+# MAGIC   SUM(contract_count) AS total_contracts,
+# MAGIC   SUM(unique_suppliers) AS unique_suppliers
+# MAGIC FROM gold_contract_analytics
+# MAGIC GROUP BY business_unit, contract_status
+# MAGIC ORDER BY total_contracts DESC;
+
+# COMMAND ----------
+
+# DBTITLE 1,A2 Creating dashboards
+# MAGIC %md
+# MAGIC ## A.2 — Creating a Dashboard from These Queries
+# MAGIC
+# MAGIC ### Step-by-step: Build in Databricks
+# MAGIC 1. Navigate to **SQL Editor** → Run each query above
+# MAGIC 2. Click **"+ New Dashboard"** from the query results
+# MAGIC 3. Add visualizations:
+# MAGIC    * **Bar chart** → Supplier Coverage by BU (Query 1)
+# MAGIC    * **Treemap** → Regional Distribution (Query 2)
+# MAGIC    * **Donut chart** → Agreement Status (Query 3)
+# MAGIC    * **Stacked bar** → Contract Analytics (Query 4)
+# MAGIC 4. Add **filter widgets** for `business_unit_name` and `region`
+# MAGIC 5. **Publish** and share with the team
+# MAGIC
+# MAGIC ### Migrating from Power BI
+# MAGIC The "Preferred Supplier List" Power BI report maps directly to our Gold tables:
+# MAGIC
+# MAGIC | Power BI Report Element | Databricks Dashboard Widget | Source Table |
+# MAGIC |------------------------|----------------------------|-------------|
+# MAGIC | Supplier by Region | Treemap by region | `gold_regional_supplier_coverage` |
+# MAGIC | Agreement Overview | KPI cards + donut | `gold_agreement_summary` |
+# MAGIC | Contract Summary | Stacked bar by BU | `gold_contract_analytics` |
+# MAGIC | Supplier Search | Data table with filters | `silver_preferred_suppliers` |
+# MAGIC
+# MAGIC > **💡 Demo:** The instructor will create a live dashboard during the session.
+
+# COMMAND ----------
+
+# DBTITLE 1,Section B Header - Genie
+# MAGIC %md
+# MAGIC ---
+# MAGIC # Section B — Designing and Building Genie Q&A Experiences
+# MAGIC
+# MAGIC > **Goal:** Configure Genie on curated datasets so business users can ask questions
+# MAGIC > in plain language and get consistent, accurate answers.
+# MAGIC
+# MAGIC ### What is Genie?
+# MAGIC Genie is Databricks' **natural language interface** to your data. Users type questions like:
+# MAGIC * "How many preferred suppliers does Liquids Pipelines have in the PRAIRIE region?"
+# MAGIC * "Show me all OPEN agreements for supplier 100343"
+# MAGIC * "Which business unit has the most contracts?"
+# MAGIC
+# MAGIC ...and Genie translates to SQL, runs it, and returns results.
+# MAGIC
+# MAGIC ### Keys to a Great Genie Experience
+# MAGIC 1. **Use Gold tables** — pre-aggregated, well-named columns
+# MAGIC 2. **Add column comments** — Genie uses them to understand semantics
+# MAGIC 3. **Define semantic context** — teach Genie your business terminology
+# MAGIC 4. **Set guardrails** — restrict which columns/tables are accessible
+# MAGIC 5. **Test with real questions** — validate answers against known results
+
+# COMMAND ----------
+
+# DBTITLE 1,B1 Genie setup
+# MAGIC %md
+# MAGIC ## B.1 — Preparing Tables for Genie
+# MAGIC
+# MAGIC Genie works best when tables have:
+# MAGIC * ✅ Descriptive **column comments** (we added these in Lesson 2)
+# MAGIC * ✅ Clean **column names** (snake_case, no spaces)
+# MAGIC * ✅ **Business-friendly values** (full names, not codes)
+# MAGIC * ✅ A manageable **table size** (Gold tables, not raw Bronze)
+# MAGIC
+# MAGIC Let's verify our Gold tables are Genie-ready:
+
+# COMMAND ----------
+
+# DBTITLE 1,B1: Verify table readiness for Genie
+# MAGIC %sql
+# MAGIC -- ============================================================
+# MAGIC -- GENIE PREP: Verify Gold tables have proper column descriptions
+# MAGIC -- ============================================================
+# MAGIC -- Genie uses column comments to understand what each field means.
+# MAGIC -- Let's add any missing descriptions.
+# MAGIC
+# MAGIC -- Add comments to Gold tables for Genie context
+# MAGIC ALTER TABLE gold_regional_supplier_coverage ALTER COLUMN bu_code 
+# MAGIC   COMMENT 'Business unit code: LP (Liquids Pipelines), GTM (Gas Transmission), GPT (Power Operations)';
+# MAGIC ALTER TABLE gold_regional_supplier_coverage ALTER COLUMN business_unit_name 
+# MAGIC   COMMENT 'Full business unit name';
+# MAGIC ALTER TABLE gold_regional_supplier_coverage ALTER COLUMN unique_suppliers 
+# MAGIC   COMMENT 'Count of distinct preferred suppliers in this BU/region/type combination';
+# MAGIC ALTER TABLE gold_regional_supplier_coverage ALTER COLUMN supplier_type 
+# MAGIC   COMMENT 'How the supplier is managed: Category Managed or Regional Sourcing';
+# MAGIC
+# MAGIC ALTER TABLE gold_agreement_summary ALTER COLUMN document_type 
+# MAGIC   COMMENT 'Agreement type: Blanket Purchase Agreement (BPA) or Contract Purchase Agreement (CPA)';
+# MAGIC ALTER TABLE gold_agreement_summary ALTER COLUMN total_agreements 
+# MAGIC   COMMENT 'Total number of purchase agreements';
+# MAGIC
+# MAGIC ALTER TABLE gold_contract_analytics ALTER COLUMN business_unit 
+# MAGIC   COMMENT 'Enbridge business unit: LP, GTM, GDS, GPT';
+# MAGIC ALTER TABLE gold_contract_analytics ALTER COLUMN contract_count 
+# MAGIC   COMMENT 'Total number of contracts';
+# MAGIC
+# MAGIC -- Verify
+# MAGIC DESCRIBE TABLE gold_regional_supplier_coverage;
+
+# COMMAND ----------
+
+# DBTITLE 1,B2 Creating Genie Space
+# MAGIC %md
+# MAGIC ## B.2 — Creating a Genie Space
+# MAGIC
+# MAGIC ### Step-by-step: Build a Genie Space
+# MAGIC
+# MAGIC 1. Navigate to **Genie** in the left sidebar
+# MAGIC 2. Click **"+ New"** to create a Genie Space
+# MAGIC 3. **Name it:** "Enbridge SCM — Preferred Supplier Analytics"
+# MAGIC 4. **Add tables:**
+# MAGIC    * `gold_regional_supplier_coverage`
+# MAGIC    * `gold_agreement_summary`
+# MAGIC    * `gold_contract_analytics`
+# MAGIC    * `silver_preferred_suppliers` (for detailed lookups)
+# MAGIC 5. **Add instructions** (semantic context):
+# MAGIC
+# MAGIC ```
+# MAGIC You are a supply chain analytics assistant for Enbridge.
+# MAGIC
+# MAGIC Business units:
+# MAGIC - LP = Liquids Pipelines
+# MAGIC - GTM = Gas Transmission  
+# MAGIC - GDS = Enbridge Gas
+# MAGIC - GPT = Power Operations
+# MAGIC
+# MAGIC Supplier types:
+# MAGIC - "Category Managed" = suppliers managed centrally by category
+# MAGIC - "Regional Sourcing" = suppliers managed by regional teams
+# MAGIC
+# MAGIC Agreement types:
+# MAGIC - BPA = Blanket Purchase Agreement (multi-use)
+# MAGIC - CPA = Contract Purchase Agreement (specific contract)
+# MAGIC
+# MAGIC When asked about "preferred suppliers", use silver_preferred_suppliers.
+# MAGIC When asked about "agreements" or "contracts", use gold_agreement_summary.
+# MAGIC When asked about "coverage" or "by region", use gold_regional_supplier_coverage.
+# MAGIC ```
+# MAGIC
+# MAGIC 6. **Test with sample questions:**
+# MAGIC    * "How many preferred suppliers does GTM have?"
+# MAGIC    * "Show me all regions for Liquids Pipelines"
+# MAGIC    * "Which agreement type has the most OPEN agreements?"
+# MAGIC    * "Top 10 suppliers by number of agreements"
+# MAGIC
+# MAGIC > **💡 Demo:** The instructor will create a live Genie Space and test questions.
+
+# COMMAND ----------
+
+# DBTITLE 1,Section C Header - MLflow
+# MAGIC %md
+# MAGIC ---
+# MAGIC # Section C — MLflow for Model Lifecycle Management
+# MAGIC
+# MAGIC > **Goal:** Track experiments, evaluate model performance, and register models for deployment.
+# MAGIC
+# MAGIC ### MLflow in a Nutshell
+# MAGIC * **Experiment Tracking** — log parameters, metrics, and artifacts for every model run
+# MAGIC * **Model Registry** — version, stage, and deploy models
+# MAGIC * **Evaluation** — automated model quality assessment
+# MAGIC * **Deployment** — serve models as REST endpoints
+# MAGIC
+# MAGIC ### SCM Use Case: Supplier Risk Classification
+# MAGIC We'll build a simple model that predicts **supplier risk** based on:
+# MAGIC * Number of agreements (more = established = lower risk)
+# MAGIC * Agreement status distribution (many CLOSED = higher risk)
+# MAGIC * Regional coverage (broader = more diversified = lower risk)
+
+# COMMAND ----------
+
+# DBTITLE 1,C1: Prepare ML features
+from pyspark.sql import functions as F
+import mlflow
+import mlflow.sklearn
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import classification_report, accuracy_score
+import pandas as pd
+import numpy as np
+
+# ============================================================
+# FEATURE ENGINEERING: Build supplier features from Gold tables
+# ============================================================
+
+# Feature 1: Supplier coverage breadth
+supplier_coverage = spark.sql("""
+  SELECT 
+    supplier_number,
+    supplier_name,
+    COUNT(DISTINCT region) AS num_regions,
+    COUNT(DISTINCT bu_code) AS num_business_units,
+    MAX(supplier_type) AS primary_supplier_type
+  FROM silver_preferred_suppliers
+  GROUP BY supplier_number, supplier_name
+""").toPandas()
+
+# Feature 2: Agreement activity
+supplier_agreements = spark.sql("""
+  SELECT 
+    supplier_number,
+    COUNT(DISTINCT agreement_number) AS num_agreements,
+    SUM(CASE WHEN agreement_status = 'OPEN' THEN 1 ELSE 0 END) AS open_agreements,
+    SUM(CASE WHEN agreement_status = 'CLOSED' THEN 1 ELSE 0 END) AS closed_agreements,
+    SUM(CASE WHEN agreement_status = 'ON HOLD' THEN 1 ELSE 0 END) AS onhold_agreements
+  FROM silver_agreements
+  GROUP BY supplier_number
+""").toPandas()
+
+# Merge features
+features = supplier_coverage.merge(supplier_agreements, on='supplier_number', how='left').fillna(0)
+
+# Create risk label (for demo: suppliers with few regions and few agreements = higher risk)
+features['risk_score'] = (
+    (features['num_regions'] < 2).astype(int) +
+    (features['num_agreements'] < 3).astype(int) +
+    (features['closed_agreements'] > features['open_agreements']).astype(int)
+)
+features['risk_category'] = features['risk_score'].apply(
+    lambda x: 'High' if x >= 2 else ('Medium' if x == 1 else 'Low')
+)
+
+print(f"Feature dataset: {len(features)} suppliers")
+print(f"\nRisk distribution:")
+print(features['risk_category'].value_counts())
+display(spark.createDataFrame(features).limit(10))
+
+# COMMAND ----------
+
+# DBTITLE 1,C2: Train model with MLflow tracking
+# ============================================================
+# MLFLOW: Train a Supplier Risk Classifier with Experiment Tracking
+# ============================================================
+
+# Prepare training data
+feature_cols = ['num_regions', 'num_business_units', 'num_agreements', 
+                'open_agreements', 'closed_agreements', 'onhold_agreements']
+X = features[feature_cols]
+y = features['risk_category']
+
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=42)
+
+# Set up MLflow experiment
+experiment_name = f"/Users/{spark.conf.get('spark.databricks.workspaceUrl', 'default')}/enbridge_scm_supplier_risk"
+try:
+    mlflow.set_experiment(experiment_name)
+except:
+    mlflow.set_experiment("/enbridge_scm_supplier_risk")
+
+# Train with MLflow tracking
+with mlflow.start_run(run_name="rf_supplier_risk_v1") as run:
+    # Log parameters
+    mlflow.log_param("model_type", "RandomForest")
+    mlflow.log_param("n_estimators", 100)
+    mlflow.log_param("features", feature_cols)
+    mlflow.log_param("num_suppliers", len(features))
+    
+    # Train model
+    model = RandomForestClassifier(n_estimators=100, random_state=42, max_depth=5)
+    model.fit(X_train, y_train)
+    
+    # Evaluate
+    y_pred = model.predict(X_test)
+    accuracy = accuracy_score(y_test, y_pred)
+    
+    # Log metrics
+    mlflow.log_metric("accuracy", accuracy)
+    mlflow.log_metric("train_size", len(X_train))
+    mlflow.log_metric("test_size", len(X_test))
+    
+    # Log model
+    mlflow.sklearn.log_model(model, "supplier_risk_model")
+    
+    # Log feature importance
+    importance = pd.DataFrame({
+        'feature': feature_cols,
+        'importance': model.feature_importances_
+    }).sort_values('importance', ascending=False)
+    
+    print(f"\n✅ Model trained and logged to MLflow")
+    print(f"   Run ID: {run.info.run_id}")
+    print(f"   Accuracy: {accuracy:.2%}")
+    print(f"\nFeature Importance:")
+    print(importance.to_string(index=False))
+    print(f"\nClassification Report:")
+    print(classification_report(y_test, y_pred))
+
+# COMMAND ----------
+
+# DBTITLE 1,C3 MLflow concepts
+# MAGIC %md
+# MAGIC ## C.3 — MLflow Key Concepts Recap
+# MAGIC
+# MAGIC ### What We Just Did
+# MAGIC 1. **Feature Engineering** — Built supplier features from Gold/Silver tables
+# MAGIC 2. **Experiment Tracking** — Logged parameters, metrics, and the model to MLflow
+# MAGIC 3. **Evaluation** — Accuracy score and classification report
+# MAGIC
+# MAGIC ### Next Steps in a Real Project
+# MAGIC | Step | Action | MLflow feature |
+# MAGIC |------|--------|---------------|
+# MAGIC | **Register** | Promote model to Model Registry | `mlflow.register_model()` |
+# MAGIC | **Stage** | Move through Dev → Staging → Production | Model aliases ("Champion", "Challenger") |
+# MAGIC | **Deploy** | Serve as REST API | Model Serving endpoint |
+# MAGIC | **Monitor** | Track drift and performance | Inference tables + monitoring |
+# MAGIC
+# MAGIC > **💡 Advanced exercise:** Register the model and create a serving endpoint
+# MAGIC > to provide real-time supplier risk scores via API.
+
+# COMMAND ----------
+
+# DBTITLE 1,Section D Header
+# MAGIC %md
+# MAGIC ---
+# MAGIC # Section D — Agentic AI & Generative AI with Mosaic AI
+# MAGIC
+# MAGIC > **Goal:** Introduction to building AI-powered agents and generative AI applications
+# MAGIC > in Databricks using Mosaic AI and enterprise data.
+# MAGIC
+# MAGIC ### Mosaic AI Building Blocks
+# MAGIC
+# MAGIC | Capability | What it does | SCM use case |
+# MAGIC |-----------|-------------|-------------|
+# MAGIC | **AI Functions (SQL)** | Call LLMs directly from SQL | Classify suppliers, summarize contracts |
+# MAGIC | **Vector Search** | Semantic search over enterprise data | "Find suppliers similar to X" |
+# MAGIC | **AI Gateway** | Governed access to LLMs | Rate limiting, logging, fallback |
+# MAGIC | **Agent Framework** | Build multi-step AI agents | Contract Q&A bot, spend analysis assistant |
+# MAGIC | **MLflow for GenAI** | Track prompts, models, evaluations | Log and compare LLM configurations |
+# MAGIC
+# MAGIC ### Enbridge SCM AI Use Cases
+# MAGIC * **Supplier Analytics Agent:** "Analyze supplier X's performance across regions"
+# MAGIC * **Contract Intelligence:** Upload a contract PDF, extract key terms, compare to database
+# MAGIC * **Spend Analysis Assistant:** "What categories have the highest spend growth?"
+# MAGIC * **Reporting Assistant:** Natural language → dashboard generation
+
+# COMMAND ----------
+
+# DBTITLE 1,D1: AI function demo - supplier risk
+# MAGIC %sql
+# MAGIC -- ============================================================
+# MAGIC -- AI FUNCTION: Classify supplier risk using AI from SQL
+# MAGIC -- ============================================================
+# MAGIC -- Databricks AI functions let you call LLMs directly from SQL.
+# MAGIC -- This is the simplest way to add AI to your data pipelines.
+# MAGIC
+# MAGIC -- Example: Generate a risk summary for suppliers with many agreements
+# MAGIC SELECT 
+# MAGIC   supplier_name,
+# MAGIC   num_agreements,
+# MAGIC   open_agreements,
+# MAGIC   closed_agreements,
+# MAGIC   ai_gen(
+# MAGIC     CONCAT(
+# MAGIC       'Provide a one-sentence risk assessment for supplier "', 
+# MAGIC       supplier_name, 
+# MAGIC       '" who has ', 
+# MAGIC       CAST(num_agreements AS STRING), 
+# MAGIC       ' agreements (', 
+# MAGIC       CAST(open_agreements AS STRING), ' open, ',
+# MAGIC       CAST(closed_agreements AS STRING), ' closed).'
+# MAGIC     )
+# MAGIC   ) AS ai_risk_assessment
+# MAGIC FROM (
+# MAGIC   SELECT 
+# MAGIC     s.supplier_name,
+# MAGIC     COUNT(DISTINCT a.agreement_number) AS num_agreements,
+# MAGIC     SUM(CASE WHEN a.agreement_status = 'OPEN' THEN 1 ELSE 0 END) AS open_agreements,
+# MAGIC     SUM(CASE WHEN a.agreement_status = 'CLOSED' THEN 1 ELSE 0 END) AS closed_agreements
+# MAGIC   FROM silver_preferred_suppliers s
+# MAGIC   LEFT JOIN silver_agreements a ON s.supplier_number = a.supplier_number
+# MAGIC   GROUP BY s.supplier_name
+# MAGIC   HAVING num_agreements > 0
+# MAGIC )
+# MAGIC ORDER BY num_agreements DESC
+# MAGIC LIMIT 5;
+
+# COMMAND ----------
+
+# DBTITLE 1,D2: AI extract from contracts
+# MAGIC %sql
+# MAGIC -- ============================================================
+# MAGIC -- AI FUNCTION: Extract structured data from contract descriptions
+# MAGIC -- ============================================================
+# MAGIC -- Use ai_extract() to pull structured fields from free-text descriptions.
+# MAGIC
+# MAGIC SELECT 
+# MAGIC   `Contract Number`,
+# MAGIC   `Contract Header Name`,
+# MAGIC   `Contract Header Description`,
+# MAGIC   ai_extract(
+# MAGIC     `Contract Header Description`,
+# MAGIC     '{
+# MAGIC       "service_category": {"type": "string", "description": "Main service or product category"},
+# MAGIC       "duration_months": {"type": "integer", "description": "Contract duration in months if mentioned"},
+# MAGIC       "has_safety_clause": {"type": "boolean", "description": "True if safety or compliance is mentioned"}
+# MAGIC     }'
+# MAGIC   ) AS extracted_fields
+# MAGIC FROM bronze_contracts
+# MAGIC WHERE `Contract Header Description` IS NOT NULL
+# MAGIC   AND LENGTH(`Contract Header Description`) > 20
+# MAGIC LIMIT 5;
+
+# COMMAND ----------
+
+# DBTITLE 1,D2 Agent concepts
+# MAGIC %md
+# MAGIC ## D.2 — Building AI Agents with Mosaic AI
+# MAGIC
+# MAGIC ### Agent Architecture Overview
+# MAGIC ```
+# MAGIC User Question → Agent (LLM) → Tools (SQL, Vector Search, Dashboards) → Response
+# MAGIC ```
+# MAGIC
+# MAGIC ### Building a Supplier Q&A Agent (Conceptual)
+# MAGIC
+# MAGIC 1. **Define tools** the agent can use:
+# MAGIC    * `query_supplier_data` — SQL on `silver_preferred_suppliers`
+# MAGIC    * `query_agreements` — SQL on `silver_agreements`
+# MAGIC    * `search_contracts` — Vector search on `bronze_contracts` descriptions
+# MAGIC
+# MAGIC 2. **System prompt** with Enbridge context:
+# MAGIC ```
+# MAGIC You are a supply chain assistant for Enbridge.
+# MAGIC You help analyze preferred suppliers, agreements, and contracts.
+# MAGIC Business units: LP (Liquids Pipelines), GTM (Gas Transmission), GPT (Power Operations).
+# MAGIC Always cite the data source and row counts in your responses.
+# MAGIC ```
+# MAGIC
+# MAGIC 3. **Deploy** as an AI Gateway endpoint or Databricks App
+# MAGIC
+# MAGIC ### Governance for GenAI
+# MAGIC * **AI Gateway** — rate limiting, token quotas, request logging
+# MAGIC * **MLflow Tracing** — log every agent interaction for audit
+# MAGIC * **Vector Search** — RAG grounded in enterprise data (no hallucinations)
+# MAGIC * **Unity Catalog** — agents inherit table-level permissions
+# MAGIC
+# MAGIC > **💡 Demo:** The instructor will show a live AI agent answering SCM questions.
+# MAGIC > **💡 Advanced exercise:** Use the Databricks Agent Framework to build a simple
+# MAGIC > supplier lookup agent with one SQL tool.
+
+# COMMAND ----------
+
+# DBTITLE 1,Section E - Databricks One
+# MAGIC %md
+# MAGIC ---
+# MAGIC # Section E — Databricks One for Self-Service Delivery
+# MAGIC
+# MAGIC > **Goal:** Use Databricks One to provide a unified, user-friendly portal for analytics.
+# MAGIC
+# MAGIC ### What is Databricks One?
+# MAGIC Databricks One is a simplified interface for business users — no Databricks experience needed.
+# MAGIC It exposes:
+# MAGIC * **Dashboards** — interactive visualizations
+# MAGIC * **Genie Spaces** — natural language Q&A
+# MAGIC * **Catalog Browser** — discoverable, governed datasets
+# MAGIC
+# MAGIC ### How Business Users Access It
+# MAGIC 1. Admin shares a Databricks One URL with the team
+# MAGIC 2. Users log in with SSO (no Databricks workspace access needed)
+# MAGIC 3. They see only what they have permission to:
+# MAGIC    * Approved dashboards
+# MAGIC    * Assigned Genie Spaces
+# MAGIC    * Catalog tables they can read
+# MAGIC
+# MAGIC ### Enbridge SCM Delivery Plan
+# MAGIC | Asset | Where it lives | Who gets access |
+# MAGIC |------|--------------|---------------|
+# MAGIC | Preferred Supplier Coverage dashboard | Databricks dashboards → Databricks One | All SCM team |
+# MAGIC | Agreement Status dashboard | Databricks dashboards → Databricks One | SCM analysts + managers |
+# MAGIC | SCM Genie Space | Genie → Databricks One | All SCM team (read-only) |
+# MAGIC | Contract Analytics dashboard | Databricks dashboards → Databricks One | SCM managers + finance |
+# MAGIC
+# MAGIC > **💡 Demo:** The instructor will show the Databricks One interface and how
+# MAGIC > business users interact with shared assets.
+
+# COMMAND ----------
+
+# DBTITLE 1,Section F - Security Header
+# MAGIC %md
+# MAGIC ---
+# MAGIC # Section F — End-User Access, Security & Governance
+# MAGIC
+# MAGIC > **Goal:** Best practices for publishing and governing self-service analytics assets.
+# MAGIC
+# MAGIC ### Access Model for Enbridge SCM
+# MAGIC
+# MAGIC ```
+# MAGIC Unity Catalog (3-level namespace)
+# MAGIC └── serverless_stable_qr9if1_catalog
+# MAGIC     └── enbridge_scm
+# MAGIC         ├── bronze_*    → Data Engineers only (WRITE + READ)
+# MAGIC         ├── silver_*    → Data Engineers (WRITE) + Analysts (READ)
+# MAGIC         ├── gold_*     → Everyone in SCM team (READ)
+# MAGIC         └── views       → Analysts (READ)
+# MAGIC ```
+# MAGIC
+# MAGIC ### Key Governance Features
+# MAGIC
+# MAGIC | Feature | Purpose | Enbridge use case |
+# MAGIC |---------|---------|------------------|
+# MAGIC | **GRANT statements** | Control who can read/write | Bronze = engineers only; Gold = all SCM |
+# MAGIC | **Row-level security** | Filter rows by user | Show only suppliers for user's BU/region |
+# MAGIC | **Column masking** | Hide sensitive columns | Mask supplier contact info for business users |
+# MAGIC | **Tags** | Classification & search | domain=supply_chain, layer=gold |
+# MAGIC | **Lineage** | Track data flow | Audit trail from Bronze → Gold |
+# MAGIC | **Audit logs** | Monitor access | system.access.audit_log table |
+
+# COMMAND ----------
+
+# DBTITLE 1,F1: Grant access examples
+# MAGIC %sql
+# MAGIC -- ============================================================
+# MAGIC -- GOVERNANCE: Grant access to Gold tables for business users
+# MAGIC -- ============================================================
+# MAGIC -- In production, you would create groups and grant access:
+# MAGIC
+# MAGIC /*
+# MAGIC -- Create a group for SCM business users
+# MAGIC CREATE GROUP IF NOT EXISTS scm_business_users;
+# MAGIC
+# MAGIC -- Grant read-only access to Gold tables
+# MAGIC GRANT SELECT ON TABLE gold_regional_supplier_coverage TO scm_business_users;
+# MAGIC GRANT SELECT ON TABLE gold_agreement_summary TO scm_business_users;
+# MAGIC GRANT SELECT ON TABLE gold_contract_analytics TO scm_business_users;
+# MAGIC
+# MAGIC -- Grant access to Silver (read-only) for analysts
+# MAGIC CREATE GROUP IF NOT EXISTS scm_analysts;
+# MAGIC GRANT SELECT ON TABLE silver_preferred_suppliers TO scm_analysts;
+# MAGIC GRANT SELECT ON TABLE silver_agreements TO scm_analysts;
+# MAGIC
+# MAGIC -- Bronze: engineers only (no grants to business users)
+# MAGIC -- They can only access via Gold tables and dashboards
+# MAGIC */
+# MAGIC
+# MAGIC SELECT 'Access control examples shown above (uncomment in production)' AS note;
+
+# COMMAND ----------
+
+# DBTITLE 1,F2: Row-level security example
+# MAGIC %sql
+# MAGIC -- ============================================================
+# MAGIC -- GOVERNANCE: Row-Level Security (RLS) Example
+# MAGIC -- ============================================================
+# MAGIC -- Row filters ensure users only see data for their business unit.
+# MAGIC -- This is applied via a function + GRANT.
+# MAGIC
+# MAGIC /*
+# MAGIC -- Create a function that filters by the current user's BU
+# MAGIC CREATE OR REPLACE FUNCTION enbridge_scm.filter_by_user_bu(region_value STRING)
+# MAGIC RETURNS BOOLEAN
+# MAGIC RETURN 
+# MAGIC   -- Allow full access for data engineers
+# MAGIC   is_member('scm_data_engineers')
+# MAGIC   -- For business users, only show their assigned BU
+# MAGIC   OR (
+# MAGIC     is_member('scm_business_users') 
+# MAGIC     AND region_value IN (
+# MAGIC       SELECT region FROM enbridge_scm.user_bu_mapping 
+# MAGIC       WHERE user_email = current_user()
+# MAGIC     )
+# MAGIC   );
+# MAGIC
+# MAGIC -- Apply the row filter to the Gold table
+# MAGIC ALTER TABLE gold_regional_supplier_coverage
+# MAGIC SET ROW FILTER enbridge_scm.filter_by_user_bu(region);
+# MAGIC */
+# MAGIC
+# MAGIC SELECT 'Row-level security example shown above (uncomment in production)' AS note;
+
+# COMMAND ----------
+
+# DBTITLE 1,Lesson 3 Exercise
+# MAGIC %md
+# MAGIC ---
+# MAGIC # 🎯 Hands-On Exercise (Lesson 3)
+# MAGIC
+# MAGIC ### Exercise 1: Build a Dashboard Query (10 min)
+# MAGIC Write a SQL query on `gold_contract_analytics` that shows:
+# MAGIC * Total contracts per business unit
+# MAGIC * Filtered to only `Active` status
+# MAGIC * Ordered by contract count descending
+# MAGIC
+# MAGIC ### Exercise 2: Prepare a Table for Genie (10 min)
+# MAGIC Choose one Gold table and:
+# MAGIC * Add column comments for at least 5 columns
+# MAGIC * Write 3 sample questions a business user might ask
+# MAGIC * Verify the table is Genie-ready using DESCRIBE TABLE
+# MAGIC
+# MAGIC ### Exercise 3: AI Enhancement (10 min)
+# MAGIC Use `ai_gen()` to generate a one-paragraph supplier summary for the top 5 suppliers
+# MAGIC by agreement count. Include their agreement status distribution in the prompt.
+# MAGIC
+# MAGIC ### 🌟 Stretch: RLS Setup (5 min)
+# MAGIC Write a row filter function that would restrict `gold_regional_supplier_coverage`
+# MAGIC to only show rows where `bu_code = 'LP'` for a specific user group.
+
+# COMMAND ----------
+
+# DBTITLE 1,Lesson 3 Summary
+# MAGIC %md
+# MAGIC ---
+# MAGIC # ✅ Lesson 3 — Summary
+# MAGIC
+# MAGIC ### What We Covered
+# MAGIC
+# MAGIC | Section | Topic | Key takeaway |
+# MAGIC |---------|-------|-------------|
+# MAGIC | **A** | Dashboards | Build on Gold tables, publish via Databricks One |
+# MAGIC | **B** | Genie | Add column comments + instructions → natural language Q&A |
+# MAGIC | **C** | MLflow | Track experiments, log metrics, register models |
+# MAGIC | **D** | Agentic AI | AI functions in SQL, agent framework, governed LLM access |
+# MAGIC | **E** | Databricks One | Unified portal for business users — no Databricks experience needed |
+# MAGIC | **F** | Security | GRANT, RLS, column masking, tags, audit logs |
+# MAGIC
+# MAGIC ### Architecture: From Source to Self-Service
+# MAGIC ```
+# MAGIC Oracle (ENBOAC) → Bronze → Silver → Gold → Dashboards + Genie + ML + AI
+# MAGIC                                                       ↓
+# MAGIC                                                Databricks One
+# MAGIC                                                       ↓
+# MAGIC                                             Business Users (SCM Team)
+# MAGIC ```
+# MAGIC
+# MAGIC ### Key Enbridge Assets Delivered
+# MAGIC * 5 Bronze tables (raw ingestion)
+# MAGIC * 2 Silver tables (cleaned, business rules applied)
+# MAGIC * 3 Gold tables (business-ready aggregations)
+# MAGIC * Dashboard queries ready for visualization
+# MAGIC * Genie setup guide with semantic context
+# MAGIC * MLflow experiment for supplier risk classification
+# MAGIC * AI function examples for contract intelligence
+# MAGIC * Governance patterns (GRANT, RLS, tags)
+# MAGIC
+# MAGIC ### ➡️ Next Steps
+# MAGIC 1. Run both notebooks in a live session with the Enbridge SCM team
+# MAGIC 2. Create the actual dashboards from the provided queries
+# MAGIC 3. Set up a Genie Space with the provided instructions
+# MAGIC 4. Configure access groups and permissions in production

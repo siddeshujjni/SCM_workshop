@@ -1,0 +1,1208 @@
+# Databricks notebook source
+# DBTITLE 1,Lesson 2 Title
+# MAGIC %md
+# MAGIC # Lesson 2 — Building Clean, Governed & Efficient Data Pipelines
+# MAGIC
+# MAGIC **Enbridge Supply Chain Management — Databricks Enablement Workshop**
+# MAGIC
+# MAGIC ---
+# MAGIC
+# MAGIC ### What you'll learn in this lesson
+# MAGIC
+# MAGIC | Section | Topic | Duration |
+# MAGIC |---------|-------|---------|
+# MAGIC | **A** | Data Governance & Quality using Unity Catalog | ~45 min |
+# MAGIC | **B** | Building Silver & Gold Layers (Business Rules) | ~40 min |
+# MAGIC | **C** | Performance and Cost-Aware Design | ~30 min |
+# MAGIC | **D** | Building Pipelines with Notebooks & Lakeflow | ~40 min |
+# MAGIC | **E** | Monitoring, Re-runs & Troubleshooting | ~20 min |
+# MAGIC | **Bonus** | Compute Selection for Performance & Cost | ~10 min |
+# MAGIC
+# MAGIC ### Scenario
+# MAGIC We will build a **Preferred Supplier List** data pipeline — the same data that today flows from
+# MAGIC Oracle (ENBOAC schema) through Power BI. We'll replicate and improve that pipeline in Databricks
+# MAGIC using the **medallion architecture** (Bronze → Silver → Gold), applying Enbridge's own business
+# MAGIC rules (ISN Grade logic, BU parsing, geography formatting, approval status mapping).
+# MAGIC
+# MAGIC ### Source Data (in UC Volume)
+# MAGIC ```
+# MAGIC /Volumes/serverless_stable_qr9if1_catalog/enbridge_scm/training/
+# MAGIC ├── Agreements - BPA.csv        (2,793 rows — Blanket Purchase Agreements)
+# MAGIC ├── Agreements - CPA.csv        (1,961 rows — Contract Purchase Agreements)
+# MAGIC ├── Contracts.csv               (1,858 rows — Legal contracts)
+# MAGIC ├── 12x Category Managed CSVs   (suppliers by BU & region)
+# MAGIC ├── 7x Regional Sourcing CSVs   (suppliers by region)
+# MAGIC └── Preferred Supplier List.pbix (original Power BI report)
+# MAGIC ```
+
+# COMMAND ----------
+
+# DBTITLE 1,Setup: Configure Catalog and Schema
+# ── Configuration ──────────────────────────────────────────────────────────────
+# Set your catalog and schema. Each participant can use their own schema.
+dbutils.widgets.text("catalog", "serverless_stable_qr9if1_catalog", "1) Catalog")
+dbutils.widgets.text("schema", "enbridge_scm", "2) Schema")
+
+CATALOG = dbutils.widgets.get("catalog").strip()
+SCHEMA  = dbutils.widgets.get("schema").strip()
+VOLUME_PATH = f"/Volumes/{CATALOG}/{SCHEMA}/training"
+
+spark.sql(f"CREATE SCHEMA IF NOT EXISTS `{CATALOG}`.`{SCHEMA}`")
+spark.sql(f"USE CATALOG `{CATALOG}`")
+spark.sql(f"USE SCHEMA `{SCHEMA}`")
+print(f"Working in: {CATALOG}.{SCHEMA}")
+print(f"Volume path: {VOLUME_PATH}")
+
+# COMMAND ----------
+
+# DBTITLE 1,Section A Header
+# MAGIC %md
+# MAGIC ---
+# MAGIC # Section A — Data Governance & Quality Using Unity Catalog
+# MAGIC
+# MAGIC > **Goal:** Structure your raw datasets in Unity Catalog with proper ownership, descriptions,
+# MAGIC > and data quality standards. Learn the different table/view types and common ingestion patterns.
+# MAGIC
+# MAGIC ### Key Concepts
+# MAGIC * **Unity Catalog 3-level namespace:** `catalog.schema.table`
+# MAGIC * **Table types:** Managed tables, external tables, views, materialized views, streaming tables
+# MAGIC * **Schema handling:** Schema inference, rescued data column, schema evolution
+# MAGIC * **Governance:** Column comments, table descriptions, ownership, tags
+
+# COMMAND ----------
+
+# DBTITLE 1,A1 Header
+# MAGIC %md
+# MAGIC ## A.1 — Structuring Datasets: Schema Ownership & Documentation
+# MAGIC
+# MAGIC Good governance starts with **organizing and documenting** your data assets.
+# MAGIC Let's set up schema-level metadata and then ingest our raw supplier files.
+
+# COMMAND ----------
+
+# DBTITLE 1,A1: Add schema description
+# MAGIC %sql
+# MAGIC -- Add a description to the schema so anyone can discover what it contains
+# MAGIC COMMENT ON SCHEMA enbridge_scm IS 
+# MAGIC   'Enbridge Supply Chain Management - Preferred Supplier List pipeline. Source: Oracle ENBOAC schema via Power BI migration.';
+# MAGIC
+# MAGIC -- Verify
+# MAGIC DESCRIBE SCHEMA EXTENDED enbridge_scm;
+
+# COMMAND ----------
+
+# DBTITLE 1,A2 Ingestion Header
+# MAGIC %md
+# MAGIC ## A.2 — Bronze Layer: Ingesting Raw Data from Volumes
+# MAGIC
+# MAGIC The **Bronze layer** holds raw data as-is from the source. We'll ingest from UC Volumes
+# MAGIC using `read_files()` — a built-in function that handles schema inference automatically.
+# MAGIC
+# MAGIC ### Ingestion Patterns Covered
+# MAGIC | Pattern | When to use | Used here |
+# MAGIC |---------|------------|----------|
+# MAGIC | `read_files()` (SQL) | Quick ingestion of files from Volumes | ✅ |
+# MAGIC | Auto Loader (streaming) | Continuous/incremental file ingestion | Section D |
+# MAGIC | COPY INTO | One-time bulk load with idempotency | Mentioned |
+# MAGIC | `spark.read` (Python) | Programmatic file reads | Shown as alternative |
+# MAGIC
+# MAGIC ### Schema Handling Behaviors
+# MAGIC * **Schema inference**: Databricks automatically detects column types from file contents
+# MAGIC * **Rescued data column**: When rows don't match the inferred schema, mismatched data goes to `_rescued_data` instead of being lost
+# MAGIC * **Header detection**: `header => 'true'` uses the first row as column names
+
+# COMMAND ----------
+
+# DBTITLE 1,A2: Ingest Agreements BPA - Bronze
+# MAGIC %sql
+# MAGIC -- ============================================================
+# MAGIC -- BRONZE TABLE: Agreements - Blanket Purchase Agreements (BPA)
+# MAGIC -- ============================================================
+# MAGIC -- Note: The CPA file has duplicate "Report Date" columns. The rescued_data 
+# MAGIC -- column automatically captures the second one — this is a real-world example
+# MAGIC -- of how Databricks handles schema mismatches gracefully.
+# MAGIC
+# MAGIC CREATE OR REPLACE TABLE bronze_agreements_bpa
+# MAGIC COMMENT 'Raw Blanket Purchase Agreements from Oracle ENBOAC. Source: Power BI Preferred Supplier List.'
+# MAGIC AS
+# MAGIC SELECT 
+# MAGIC   *,
+# MAGIC   _metadata.file_name AS source_file,
+# MAGIC   current_timestamp() AS ingested_at
+# MAGIC FROM read_files(
+# MAGIC   '/Volumes/serverless_stable_qr9if1_catalog/enbridge_scm/training/Agreements - BPA.csv',
+# MAGIC   format => 'csv',
+# MAGIC   header => 'true'
+# MAGIC );
+# MAGIC
+# MAGIC SELECT count(*) as row_count, * FROM bronze_agreements_bpa LIMIT 5;
+
+# COMMAND ----------
+
+# DBTITLE 1,A2: Ingest Agreements CPA - Bronze
+# MAGIC %sql
+# MAGIC -- ============================================================
+# MAGIC -- BRONZE TABLE: Agreements - Contract Purchase Agreements (CPA)  
+# MAGIC -- ============================================================
+# MAGIC -- This file has a duplicate "Report Date" column — observe how 
+# MAGIC -- _rescued_data captures the second occurrence automatically.
+# MAGIC
+# MAGIC CREATE OR REPLACE TABLE bronze_agreements_cpa
+# MAGIC COMMENT 'Raw Contract Purchase Agreements from Oracle ENBOAC. Source: Power BI Preferred Supplier List.'
+# MAGIC AS
+# MAGIC SELECT 
+# MAGIC   *,
+# MAGIC   _metadata.file_name AS source_file,
+# MAGIC   current_timestamp() AS ingested_at
+# MAGIC FROM read_files(
+# MAGIC   '/Volumes/serverless_stable_qr9if1_catalog/enbridge_scm/training/Agreements - CPA.csv',
+# MAGIC   format => 'csv',
+# MAGIC   header => 'true'
+# MAGIC );
+# MAGIC
+# MAGIC -- Inspect the rescued data column to see what didn't fit the schema
+# MAGIC SELECT `_rescued_data`, count(*) as cnt 
+# MAGIC FROM bronze_agreements_cpa 
+# MAGIC WHERE `_rescued_data` IS NOT NULL 
+# MAGIC GROUP BY `_rescued_data` 
+# MAGIC LIMIT 5;
+
+# COMMAND ----------
+
+# DBTITLE 1,A2: Ingest Contracts - Bronze
+# MAGIC %sql
+# MAGIC -- ============================================================
+# MAGIC -- BRONZE TABLE: Contracts
+# MAGIC -- ============================================================
+# MAGIC CREATE OR REPLACE TABLE bronze_contracts
+# MAGIC COMMENT 'Raw legal contracts from Oracle ENBOAC. Includes contract terms, amounts, parties, and business units.'
+# MAGIC AS
+# MAGIC SELECT 
+# MAGIC   *,
+# MAGIC   _metadata.file_name AS source_file,
+# MAGIC   current_timestamp() AS ingested_at
+# MAGIC FROM read_files(
+# MAGIC   '/Volumes/serverless_stable_qr9if1_catalog/enbridge_scm/training/Contracts.csv',
+# MAGIC   format => 'csv',
+# MAGIC   header => 'true'
+# MAGIC );
+# MAGIC
+# MAGIC SELECT count(*) as row_count FROM bronze_contracts;
+
+# COMMAND ----------
+
+# DBTITLE 1,A2: Ingest Category Managed suppliers - Bronze
+# MAGIC %sql
+# MAGIC -- ============================================================
+# MAGIC -- BRONZE TABLE: Category Managed Suppliers (all regions)
+# MAGIC -- ============================================================
+# MAGIC -- Ingesting 12 separate CSV files into ONE table using wildcard path.
+# MAGIC -- This is a common pattern: land multiple source files as a single table.
+# MAGIC -- The file name is captured as metadata so we can trace lineage.
+# MAGIC
+# MAGIC CREATE OR REPLACE TABLE bronze_category_managed
+# MAGIC COMMENT 'Preferred suppliers managed by category across all Enbridge business units (GTM, LP, GPT) and regions. Unioned from 12 source files.'
+# MAGIC AS
+# MAGIC SELECT 
+# MAGIC   `Supplier Name`  AS supplier_name,
+# MAGIC   `Supplier Number` AS supplier_number,
+# MAGIC   `Business Unit`   AS business_unit,
+# MAGIC   `Region`          AS region,
+# MAGIC   _metadata.file_name AS source_file,
+# MAGIC   current_timestamp() AS ingested_at
+# MAGIC FROM read_files(
+# MAGIC   '/Volumes/serverless_stable_qr9if1_catalog/enbridge_scm/training/*Category Managed*.csv',
+# MAGIC   format => 'csv',
+# MAGIC   header => 'true'
+# MAGIC );
+# MAGIC
+# MAGIC -- Verify: count by business unit and region
+# MAGIC SELECT business_unit, region, count(*) as supplier_count 
+# MAGIC FROM bronze_category_managed 
+# MAGIC GROUP BY business_unit, region 
+# MAGIC ORDER BY business_unit, region;
+
+# COMMAND ----------
+
+# DBTITLE 1,A2: Ingest Regional Sourcing suppliers - Bronze
+# MAGIC %sql
+# MAGIC -- ============================================================
+# MAGIC -- BRONZE TABLE: Regional Sourcing Suppliers (all regions)
+# MAGIC -- ============================================================
+# MAGIC CREATE OR REPLACE TABLE bronze_regional_sourcing
+# MAGIC COMMENT 'Preferred suppliers for regional sourcing across all Enbridge business units and regions. Unioned from 7 source files.'
+# MAGIC AS
+# MAGIC SELECT 
+# MAGIC   `Supplier Name`  AS supplier_name,
+# MAGIC   `Supplier Number` AS supplier_number,
+# MAGIC   `Business Unit`   AS business_unit,
+# MAGIC   `Region`          AS region,
+# MAGIC   _metadata.file_name AS source_file,
+# MAGIC   current_timestamp() AS ingested_at
+# MAGIC FROM read_files(
+# MAGIC   '/Volumes/serverless_stable_qr9if1_catalog/enbridge_scm/training/*Regional Sourcing*.csv',
+# MAGIC   format => 'csv',
+# MAGIC   header => 'true'
+# MAGIC );
+# MAGIC
+# MAGIC SELECT business_unit, region, count(*) as supplier_count 
+# MAGIC FROM bronze_regional_sourcing 
+# MAGIC GROUP BY business_unit, region 
+# MAGIC ORDER BY business_unit, region;
+
+# COMMAND ----------
+
+# DBTITLE 1,A3 Table Types Header
+# MAGIC %md
+# MAGIC ## A.3 — Table and View Types in Databricks
+# MAGIC
+# MAGIC Databricks supports several storage objects. Understanding **when to use each** is critical:
+# MAGIC
+# MAGIC | Type | Persisted? | Auto-refresh? | Best for |
+# MAGIC |------|-----------|--------------|----------|
+# MAGIC | **Managed Table** | ✅ Data + metadata in UC | No | Bronze/Silver/Gold layers, ETL output |
+# MAGIC | **External Table** | ✅ Data in your storage | No | Data shared across platforms |
+# MAGIC | **View** | ❌ Logical only | N/A (computed on read) | Reusable query logic, row-level security |
+# MAGIC | **Materialized View** | ✅ Pre-computed results | ✅ In Lakeflow pipelines | Gold aggregations, dashboard acceleration |
+# MAGIC | **Streaming Table** | ✅ Append-only | ✅ In Lakeflow pipelines | Real-time/incremental ingestion |
+# MAGIC
+# MAGIC > **💡 Tip:** In the Preferred Supplier List pipeline, we use **managed tables** for Bronze/Silver/Gold
+# MAGIC > layers (simple, governed, performant). In Section D, we'll convert this to a **Lakeflow pipeline**
+# MAGIC > using streaming tables and materialized views.
+
+# COMMAND ----------
+
+# DBTITLE 1,A3: Demonstrate table types
+# MAGIC %sql
+# MAGIC -- Let's see all our Bronze tables and understand table types
+# MAGIC
+# MAGIC -- A VIEW is a saved query — it doesn't store data, just the SQL logic.
+# MAGIC -- Great for reusable filters or security policies.
+# MAGIC CREATE OR REPLACE VIEW vw_active_contracts AS
+# MAGIC SELECT * FROM bronze_contracts
+# MAGIC WHERE `Contract Status` = 'Active';
+# MAGIC
+# MAGIC -- Check: A view has no storage cost, it computes on every read
+# MAGIC SELECT count(*) as active_contracts FROM vw_active_contracts;
+# MAGIC
+# MAGIC -- Our managed tables (bronze_*) store actual data in Unity Catalog
+# MAGIC SHOW TABLES IN enbridge_scm;
+
+# COMMAND ----------
+
+# DBTITLE 1,A4 Governance Header
+# MAGIC %md
+# MAGIC ## A.4 — Adding Governance: Column Comments, Tags & Constraints
+# MAGIC
+# MAGIC Proper documentation makes data **discoverable** and **trustworthy**. Let's add:
+# MAGIC * Column-level comments (business definitions)
+# MAGIC * Table-level tags (for classification and search)
+# MAGIC * NOT NULL constraints (for data quality enforcement)
+
+# COMMAND ----------
+
+# DBTITLE 1,A4: Add column descriptions to bronze_contracts
+# MAGIC %sql
+# MAGIC -- Add business-meaningful descriptions to key columns
+# MAGIC ALTER TABLE bronze_contracts ALTER COLUMN `Contract Number`  COMMENT 'Unique identifier for the contract in Oracle Cloud';
+# MAGIC ALTER TABLE bronze_contracts ALTER COLUMN `Contract Status`  COMMENT 'Current status: Active, Expired, Terminated, etc.';
+# MAGIC ALTER TABLE bronze_contracts ALTER COLUMN `Contract Amount`  COMMENT 'Total contract value in the header currency';
+# MAGIC ALTER TABLE bronze_contracts ALTER COLUMN `Enbridge Business Unit` COMMENT 'BU code: LP (Liquids Pipelines), GTM (Gas Transmission), GDS (Enbridge Gas), GPT (Power Operations)';
+# MAGIC ALTER TABLE bronze_contracts ALTER COLUMN `Contract Party Name`   COMMENT 'Legal name of the contracting supplier/vendor';
+# MAGIC
+# MAGIC -- Add tags for classification (helps with search and governance policies)
+# MAGIC ALTER TABLE bronze_contracts SET TAGS ('domain' = 'supply_chain', 'layer' = 'bronze', 'source' = 'oracle_enboac');
+# MAGIC ALTER TABLE bronze_category_managed SET TAGS ('domain' = 'supply_chain', 'layer' = 'bronze', 'source' = 'oracle_enboac');
+# MAGIC ALTER TABLE bronze_agreements_bpa SET TAGS ('domain' = 'supply_chain', 'layer' = 'bronze', 'source' = 'oracle_enboac');
+# MAGIC ALTER TABLE bronze_agreements_cpa SET TAGS ('domain' = 'supply_chain', 'layer' = 'bronze', 'source' = 'oracle_enboac');
+# MAGIC
+# MAGIC -- Verify the metadata
+# MAGIC DESCRIBE TABLE EXTENDED bronze_contracts;
+
+# COMMAND ----------
+
+# DBTITLE 1,A5 Data Quality Header
+# MAGIC %md
+# MAGIC ## A.5 — Data Quality Patterns: Validation, Rescued Data & Quarantine
+# MAGIC
+# MAGIC ### Key Data Quality Patterns
+# MAGIC
+# MAGIC | Pattern | Purpose | Example |
+# MAGIC |---------|---------|--------|
+# MAGIC | **Rescued Data Column** | Capture schema-mismatched values instead of losing them | CPA file's duplicate "Report Date" column |
+# MAGIC | **Validation Checks** | Assert expected values before promoting to Silver | Check for NULL supplier numbers, valid status codes |
+# MAGIC | **Consistency Rules** | Enforce business constraints | Agreement dates must be valid, BU codes must be known |
+# MAGIC | **Quarantine Pattern** | Isolate bad records for review | Route failed validations to a separate table |
+# MAGIC | **Traceability** | Track data lineage | `source_file`, `ingested_at` columns on every table |
+
+# COMMAND ----------
+
+# DBTITLE 1,A5: Data quality validation example
+# MAGIC %sql
+# MAGIC -- ============================================================
+# MAGIC -- DATA QUALITY CHECK: Inspect the rescued data from CPA ingestion
+# MAGIC -- ============================================================
+# MAGIC -- The CPA file has TWO "Report Date" columns. The second one was
+# MAGIC -- automatically rescued. Let's examine it.
+# MAGIC
+# MAGIC SELECT 
+# MAGIC   `Report Date`,
+# MAGIC   `_rescued_data`,
+# MAGIC   `Agreement Number`,
+# MAGIC   `Supplier`
+# MAGIC FROM bronze_agreements_cpa 
+# MAGIC WHERE `_rescued_data` IS NOT NULL 
+# MAGIC LIMIT 10;
+
+# COMMAND ----------
+
+# DBTITLE 1,A5: Quarantine pattern demo
+# MAGIC %sql
+# MAGIC -- ============================================================
+# MAGIC -- QUARANTINE PATTERN: Separate good records from bad ones
+# MAGIC -- ============================================================
+# MAGIC -- This is a common Silver-layer pattern: validate before promoting.
+# MAGIC
+# MAGIC -- Step 1: Identify quality issues in bronze_category_managed
+# MAGIC SELECT 
+# MAGIC   'Missing supplier_number' AS issue,
+# MAGIC   count(*) AS affected_rows
+# MAGIC FROM bronze_category_managed 
+# MAGIC WHERE supplier_number IS NULL
+# MAGIC
+# MAGIC UNION ALL
+# MAGIC
+# MAGIC SELECT 
+# MAGIC   'Unknown business_unit' AS issue,
+# MAGIC   count(*) AS affected_rows
+# MAGIC FROM bronze_category_managed 
+# MAGIC WHERE business_unit NOT IN ('LP', 'GTM', 'GPT', 'GDS')
+# MAGIC
+# MAGIC UNION ALL
+# MAGIC
+# MAGIC SELECT 
+# MAGIC   'Missing supplier_name' AS issue,
+# MAGIC   count(*) AS affected_rows
+# MAGIC FROM bronze_category_managed 
+# MAGIC WHERE supplier_name IS NULL OR TRIM(supplier_name) = '';
+# MAGIC
+# MAGIC -- 💡 In a production pipeline, rows failing these checks would be routed
+# MAGIC -- to a quarantine table (bronze_category_managed_quarantine) for review,
+# MAGIC -- while passing rows proceed to Silver.
+
+# COMMAND ----------
+
+# DBTITLE 1,Section B Header
+# MAGIC %md
+# MAGIC ---
+# MAGIC # Section B — Building Silver & Gold Layers (Applying Enbridge Business Rules)
+# MAGIC
+# MAGIC > **Goal:** Transform raw Bronze data into clean, business-ready tables using the actual
+# MAGIC > transformation logic from the Power BI → Databricks SQL documentation.
+# MAGIC
+# MAGIC ### Enbridge Business Rules (from SQL Source & Transformation Documentation)
+# MAGIC
+# MAGIC | Rule | Description | Used in |
+# MAGIC |------|------------|--------|
+# MAGIC | **R1** | ISN Grade: expired→NULL, blocking→'N/A - Contractor Blocking', else grade | Suppliers, Category Search |
+# MAGIC | **R2** | BU parsing: extract business unit code from sourcing rule name | Category Search, Approved Categories |
+# MAGIC | **R3** | Geography: format as 'Parent Region - Region' or fallback to lookup | Category Search, Approved Categories |
+# MAGIC | **R4** | BU code→full name: LP→'Liquids Pipelines', GTM→'Gas Transmission', etc. | Category Search (ISN join) |
+# MAGIC | **R5** | Approval Status: rank 1→Approved, 2→In Process, 3→Debarred, etc. | Category Search, Approved Categories |
+
+# COMMAND ----------
+
+# DBTITLE 1,B1 Header
+# MAGIC %md
+# MAGIC ## B.1 — Silver Layer: Unified Preferred Suppliers
+# MAGIC
+# MAGIC Combine **Category Managed** and **Regional Sourcing** supplier lists into a single,
+# MAGIC cleaned Silver table. Apply business rule **R4** (BU code to full name mapping).
+
+# COMMAND ----------
+
+# DBTITLE 1,B1: Silver unified preferred suppliers
+# MAGIC %sql
+# MAGIC -- ============================================================
+# MAGIC -- SILVER TABLE: Unified Preferred Suppliers
+# MAGIC -- ============================================================
+# MAGIC -- Combines Category Managed + Regional Sourcing into one table.
+# MAGIC -- Applies Business Rule R4: BU code → full business unit name.
+# MAGIC
+# MAGIC CREATE OR REPLACE TABLE silver_preferred_suppliers
+# MAGIC COMMENT 'Unified preferred supplier list with BU name resolution. Silver layer — cleaned and standardized.'
+# MAGIC AS
+# MAGIC SELECT 
+# MAGIC   supplier_name,
+# MAGIC   CAST(supplier_number AS INT) AS supplier_number,
+# MAGIC   business_unit AS bu_code,
+# MAGIC   -- Business Rule R4: Map BU code to full name
+# MAGIC   CASE business_unit
+# MAGIC     WHEN 'LP'  THEN 'Liquids Pipelines'
+# MAGIC     WHEN 'GTM' THEN 'Gas Transmission'
+# MAGIC     WHEN 'GDS' THEN 'Enbridge Gas'
+# MAGIC     WHEN 'GPT' THEN 'Power Operations'
+# MAGIC     ELSE business_unit
+# MAGIC   END AS business_unit_name,
+# MAGIC   region,
+# MAGIC   'Category Managed' AS supplier_type,
+# MAGIC   source_file,
+# MAGIC   ingested_at
+# MAGIC FROM bronze_category_managed
+# MAGIC
+# MAGIC UNION ALL
+# MAGIC
+# MAGIC SELECT 
+# MAGIC   supplier_name,
+# MAGIC   CAST(supplier_number AS INT) AS supplier_number,
+# MAGIC   business_unit AS bu_code,
+# MAGIC   CASE business_unit
+# MAGIC     WHEN 'LP'  THEN 'Liquids Pipelines'
+# MAGIC     WHEN 'GTM' THEN 'Gas Transmission'
+# MAGIC     WHEN 'GDS' THEN 'Enbridge Gas'
+# MAGIC     WHEN 'GPT' THEN 'Power Operations'
+# MAGIC     ELSE business_unit
+# MAGIC   END AS business_unit_name,
+# MAGIC   region,
+# MAGIC   'Regional Sourcing' AS supplier_type,
+# MAGIC   source_file,
+# MAGIC   ingested_at
+# MAGIC FROM bronze_regional_sourcing;
+# MAGIC
+# MAGIC -- Add governance metadata
+# MAGIC ALTER TABLE silver_preferred_suppliers SET TAGS ('domain' = 'supply_chain', 'layer' = 'silver');
+# MAGIC ALTER TABLE silver_preferred_suppliers ALTER COLUMN bu_code COMMENT 'Business unit code: LP, GTM, GDS, GPT';
+# MAGIC ALTER TABLE silver_preferred_suppliers ALTER COLUMN business_unit_name COMMENT 'Full BU name per Rule R4: LP=Liquids Pipelines, GTM=Gas Transmission, GDS=Enbridge Gas, GPT=Power Operations';
+# MAGIC
+# MAGIC SELECT * FROM silver_preferred_suppliers LIMIT 10;
+
+# COMMAND ----------
+
+# DBTITLE 1,B2 Header
+# MAGIC %md
+# MAGIC ## B.2 — Silver Layer: Cleaned Agreements
+# MAGIC
+# MAGIC Standardize both agreement types (BPA and CPA) into a unified Silver table.
+# MAGIC Handle the rescued data from the duplicate "Report Date" column in CPA.
+
+# COMMAND ----------
+
+# DBTITLE 1,B2: Silver unified agreements
+# MAGIC %sql
+# MAGIC -- ============================================================
+# MAGIC -- SILVER TABLE: Unified Agreements (BPA + CPA)
+# MAGIC -- ============================================================
+# MAGIC -- Handles the duplicate Report Date column in CPA via rescued data.
+# MAGIC -- Standardizes both agreement types into a single schema.
+# MAGIC
+# MAGIC CREATE OR REPLACE TABLE silver_agreements
+# MAGIC COMMENT 'Unified BPA and CPA agreements. Silver layer with standardized dates and types.'
+# MAGIC AS
+# MAGIC WITH bpa_cleaned AS (
+# MAGIC   SELECT 
+# MAGIC     `Document Type` AS document_type,
+# MAGIC     CAST(`Supplier Number` AS INT) AS supplier_number,
+# MAGIC     `Supplier` AS supplier_name,
+# MAGIC     `Site` AS site,
+# MAGIC     `Inactive Date` AS inactive_date,
+# MAGIC     `Contract Number` AS contract_number,
+# MAGIC     `Agreement Number` AS agreement_number,
+# MAGIC     `Agreement Status Lookup Code` AS agreement_status,
+# MAGIC     `Report Date` AS report_start_date,
+# MAGIC     -- BPA has a proper second Report Date column: "Requisition Business Unit Name"
+# MAGIC     -- which is distinct from CPA's duplicate
+# MAGIC     `Requisition Business Unit Name` AS requisition_bu_name,
+# MAGIC     `Preferred Status` AS preferred_status,
+# MAGIC     `Maximo Region` AS maximo_region,
+# MAGIC     `Enbridge Regional Area` AS enbridge_regional_area,
+# MAGIC     `Category Name` AS category_name,
+# MAGIC     source_file,
+# MAGIC     ingested_at
+# MAGIC   FROM bronze_agreements_bpa
+# MAGIC ),
+# MAGIC cpa_cleaned AS (
+# MAGIC   SELECT 
+# MAGIC     `Document Type` AS document_type,
+# MAGIC     CAST(`Supplier Number` AS INT) AS supplier_number,
+# MAGIC     `Supplier` AS supplier_name,
+# MAGIC     `Site` AS site,
+# MAGIC     `Inactive Date` AS inactive_date,
+# MAGIC     `Contract Number` AS contract_number,
+# MAGIC     `Agreement Number` AS agreement_number,
+# MAGIC     `Agreement Status Lookup Code` AS agreement_status,
+# MAGIC     `Report Date` AS report_start_date,
+# MAGIC     -- Extract the second Report Date from rescued data (it's the end date)
+# MAGIC     CAST(get_json_object(`_rescued_data`, '$.Report Date_9') AS DATE) AS report_end_date,
+# MAGIC     `Preferred Status` AS preferred_status,
+# MAGIC     `Maximo Region` AS maximo_region,
+# MAGIC     `Enbridge Regional Area` AS enbridge_regional_area,
+# MAGIC     source_file,
+# MAGIC     ingested_at
+# MAGIC   FROM bronze_agreements_cpa
+# MAGIC )
+# MAGIC SELECT 
+# MAGIC   document_type, supplier_number, supplier_name, site, inactive_date,
+# MAGIC   contract_number, agreement_number, agreement_status,
+# MAGIC   report_start_date, NULL AS report_end_date,
+# MAGIC   preferred_status, maximo_region, enbridge_regional_area,
+# MAGIC   requisition_bu_name, category_name,
+# MAGIC   source_file, ingested_at
+# MAGIC FROM bpa_cleaned
+# MAGIC
+# MAGIC UNION ALL
+# MAGIC
+# MAGIC SELECT 
+# MAGIC   document_type, supplier_number, supplier_name, site, inactive_date,
+# MAGIC   contract_number, agreement_number, agreement_status,
+# MAGIC   report_start_date, report_end_date,
+# MAGIC   preferred_status, maximo_region, enbridge_regional_area,
+# MAGIC   NULL AS requisition_bu_name, NULL AS category_name,
+# MAGIC   source_file, ingested_at
+# MAGIC FROM cpa_cleaned;
+# MAGIC
+# MAGIC ALTER TABLE silver_agreements SET TAGS ('domain' = 'supply_chain', 'layer' = 'silver');
+# MAGIC
+# MAGIC -- Quick look at the unified result
+# MAGIC SELECT document_type, agreement_status, count(*) as cnt
+# MAGIC FROM silver_agreements
+# MAGIC GROUP BY document_type, agreement_status
+# MAGIC ORDER BY document_type, cnt DESC;
+
+# COMMAND ----------
+
+# DBTITLE 1,B3 Gold Header
+# MAGIC %md
+# MAGIC ## B.3 — Gold Layer: Business-Ready Analytics Tables
+# MAGIC
+# MAGIC Gold tables are **optimized for consumption** — dashboards, Genie, reports.
+# MAGIC We build two Gold tables that mirror what the Power BI report needs.
+
+# COMMAND ----------
+
+# DBTITLE 1,B3: Gold regional supplier coverage
+# MAGIC %sql
+# MAGIC -- ============================================================
+# MAGIC -- GOLD TABLE: Regional Supplier Coverage
+# MAGIC -- ============================================================
+# MAGIC -- One row per BU + Region with supplier counts and type breakdown.
+# MAGIC -- Powers the regional coverage dashboard.
+# MAGIC
+# MAGIC CREATE OR REPLACE TABLE gold_regional_supplier_coverage
+# MAGIC COMMENT 'Regional supplier coverage summary by business unit and region. Gold layer for dashboards and reporting.'
+# MAGIC AS
+# MAGIC SELECT 
+# MAGIC   bu_code,
+# MAGIC   business_unit_name,
+# MAGIC   region,
+# MAGIC   supplier_type,
+# MAGIC   COUNT(DISTINCT supplier_number) AS unique_suppliers,
+# MAGIC   COUNT(*) AS total_assignments
+# MAGIC FROM silver_preferred_suppliers
+# MAGIC GROUP BY bu_code, business_unit_name, region, supplier_type
+# MAGIC ORDER BY business_unit_name, region;
+# MAGIC
+# MAGIC ALTER TABLE gold_regional_supplier_coverage SET TAGS ('domain' = 'supply_chain', 'layer' = 'gold');
+# MAGIC
+# MAGIC SELECT * FROM gold_regional_supplier_coverage;
+
+# COMMAND ----------
+
+# DBTITLE 1,B3: Gold agreement status summary
+# MAGIC %sql
+# MAGIC -- ============================================================
+# MAGIC -- GOLD TABLE: Agreement Status Summary  
+# MAGIC -- ============================================================
+# MAGIC -- Aggregated view of all agreements for executive dashboards.
+# MAGIC
+# MAGIC CREATE OR REPLACE TABLE gold_agreement_summary
+# MAGIC COMMENT 'Aggregated agreement status summary by type and supplier. Gold layer for executive dashboards.'
+# MAGIC AS
+# MAGIC SELECT 
+# MAGIC   document_type,
+# MAGIC   agreement_status,
+# MAGIC   COUNT(DISTINCT supplier_number) AS unique_suppliers,
+# MAGIC   COUNT(DISTINCT agreement_number) AS total_agreements,
+# MAGIC   COUNT(DISTINCT contract_number) AS total_contracts,
+# MAGIC   MIN(report_start_date) AS earliest_report_date,
+# MAGIC   MAX(report_start_date) AS latest_report_date
+# MAGIC FROM silver_agreements
+# MAGIC GROUP BY document_type, agreement_status
+# MAGIC ORDER BY document_type, total_agreements DESC;
+# MAGIC
+# MAGIC ALTER TABLE gold_agreement_summary SET TAGS ('domain' = 'supply_chain', 'layer' = 'gold');
+# MAGIC
+# MAGIC SELECT * FROM gold_agreement_summary;
+
+# COMMAND ----------
+
+# DBTITLE 1,B3: Gold contract analytics
+# MAGIC %sql
+# MAGIC -- ============================================================
+# MAGIC -- GOLD TABLE: Contract Analytics by Business Unit
+# MAGIC -- ============================================================
+# MAGIC CREATE OR REPLACE TABLE gold_contract_analytics
+# MAGIC COMMENT 'Contract analytics by business unit, status, and type. Gold layer for spend analysis.'
+# MAGIC AS
+# MAGIC SELECT 
+# MAGIC   `Enbridge Business Unit` AS business_unit,
+# MAGIC   `Contract Status` AS contract_status,
+# MAGIC   `Contract Type` AS contract_type,
+# MAGIC   `Contract Classification` AS contract_classification,
+# MAGIC   COUNT(*) AS contract_count,
+# MAGIC   COUNT(DISTINCT `Contract Party Name`) AS unique_suppliers,
+# MAGIC   MIN(`Contract Start Date`) AS earliest_start,
+# MAGIC   MAX(`Contract End Date`) AS latest_end
+# MAGIC FROM bronze_contracts
+# MAGIC WHERE `Enbridge Business Unit` IS NOT NULL
+# MAGIC GROUP BY `Enbridge Business Unit`, `Contract Status`, `Contract Type`, `Contract Classification`
+# MAGIC ORDER BY business_unit, contract_count DESC;
+# MAGIC
+# MAGIC ALTER TABLE gold_contract_analytics SET TAGS ('domain' = 'supply_chain', 'layer' = 'gold');
+# MAGIC
+# MAGIC SELECT * FROM gold_contract_analytics;
+
+# COMMAND ----------
+
+# DBTITLE 1,Section C Header
+# MAGIC %md
+# MAGIC ---
+# MAGIC # Section C — Performance and Cost-Aware Design
+# MAGIC
+# MAGIC > **Goal:** Learn techniques for efficient pipeline design that minimize cost and improve performance.
+# MAGIC
+# MAGIC ### Key Techniques
+# MAGIC * **Liquid Clustering** — automatically organizes data for fast queries (replaces Z-ORDER)
+# MAGIC * **Optimized joins** — broadcast small tables, push predicates down
+# MAGIC * **Reuse intermediate results** — temp views and CTEs avoid redundant processing
+# MAGIC * **Column pruning** — SELECT only what you need
+
+# COMMAND ----------
+
+# DBTITLE 1,C1: Liquid Clustering demo
+# MAGIC %sql
+# MAGIC -- ============================================================
+# MAGIC -- PERFORMANCE: Liquid Clustering
+# MAGIC -- ============================================================
+# MAGIC -- Liquid Clustering replaces PARTITIONING and Z-ORDER with a simpler, 
+# MAGIC -- more adaptive approach. It automatically organizes data for fast 
+# MAGIC -- queries based on the columns you cluster by.
+# MAGIC
+# MAGIC -- Apply clustering to our Gold table — queries often filter by BU and region
+# MAGIC ALTER TABLE gold_regional_supplier_coverage
+# MAGIC CLUSTER BY (bu_code, region);
+# MAGIC
+# MAGIC -- Apply to silver_agreements — queries often filter by status and type
+# MAGIC ALTER TABLE silver_agreements
+# MAGIC CLUSTER BY (document_type, agreement_status);
+# MAGIC
+# MAGIC -- Verify clustering
+# MAGIC DESCRIBE TABLE EXTENDED gold_regional_supplier_coverage;
+
+# COMMAND ----------
+
+# DBTITLE 1,C2: Efficient join and CTE patterns
+# MAGIC %sql
+# MAGIC -- ============================================================
+# MAGIC -- PERFORMANCE: Efficient Joins and Reusing Intermediate Results
+# MAGIC -- ============================================================
+# MAGIC -- Bad pattern:  Running the same subquery multiple times
+# MAGIC -- Good pattern: Use CTEs (WITH clause) or temp views to compute once, reuse many times
+# MAGIC
+# MAGIC -- GOOD: CTE computes supplier_base once, then reused in two aggregations
+# MAGIC WITH supplier_base AS (
+# MAGIC   -- This is computed ONCE
+# MAGIC   SELECT 
+# MAGIC     supplier_number,
+# MAGIC     supplier_name,
+# MAGIC     bu_code,
+# MAGIC     business_unit_name,
+# MAGIC     region,
+# MAGIC     supplier_type
+# MAGIC   FROM silver_preferred_suppliers
+# MAGIC ),
+# MAGIC by_region AS (
+# MAGIC   SELECT region, COUNT(DISTINCT supplier_number) AS suppliers_in_region
+# MAGIC   FROM supplier_base
+# MAGIC   GROUP BY region
+# MAGIC ),
+# MAGIC by_bu AS (
+# MAGIC   SELECT bu_code, business_unit_name, COUNT(DISTINCT supplier_number) AS suppliers_in_bu
+# MAGIC   FROM supplier_base
+# MAGIC   GROUP BY bu_code, business_unit_name
+# MAGIC )
+# MAGIC SELECT 
+# MAGIC   b.bu_code,
+# MAGIC   b.business_unit_name,
+# MAGIC   b.suppliers_in_bu,
+# MAGIC   r.region,
+# MAGIC   r.suppliers_in_region
+# MAGIC FROM by_bu b
+# MAGIC CROSS JOIN by_region r
+# MAGIC ORDER BY b.bu_code, r.region;
+
+# COMMAND ----------
+
+# DBTITLE 1,C3: Python broadcast join optimization
+from pyspark.sql import functions as F
+
+# ============================================================
+# PERFORMANCE: Broadcast Join for Small Tables
+# ============================================================
+# When joining a large table with a small lookup, use broadcast()
+# to send the small table to all workers — avoids expensive shuffle.
+
+# Our supplier lookup is small (~2,500 rows) — perfect for broadcast
+preferred_suppliers = spark.table("silver_preferred_suppliers")
+agreements = spark.table("silver_agreements")
+
+print(f"Preferred suppliers: {preferred_suppliers.count():,} rows")
+print(f"Agreements: {agreements.count():,} rows")
+
+# Broadcast the smaller table for an efficient join
+joined = agreements.join(
+    F.broadcast(preferred_suppliers),  # <-- broadcast hint
+    on="supplier_number",
+    how="left"
+)
+
+# Explain the plan to see the BroadcastHashJoin
+print("\n--- Query Plan (note BroadcastHashJoin) ---")
+joined.explain(mode="simple")
+
+# COMMAND ----------
+
+# DBTITLE 1,C4 Column pruning
+# MAGIC %md
+# MAGIC ## 💡 Performance Best Practices Summary
+# MAGIC
+# MAGIC | Technique | Impact | When to use |
+# MAGIC |-----------|--------|------------|
+# MAGIC | **Liquid Clustering** | 2-10x faster queries | Tables queried with consistent filter columns |
+# MAGIC | **Broadcast joins** | Eliminate shuffle | Small table (<\~1GB) joined to large table |
+# MAGIC | **CTEs / Temp views** | Avoid recomputation | Same intermediate result used multiple times |
+# MAGIC | **Column pruning** | Less I/O | `SELECT col1, col2` instead of `SELECT *` |
+# MAGIC | **Predicate pushdown** | Scan less data | Filter early in the query (`WHERE` before `JOIN`) |
+# MAGIC | **OPTIMIZE** | Compact small files | After many small writes (streaming, inserts) |
+# MAGIC
+# MAGIC > **⚠️ Advanced exercise:** Run `EXPLAIN` on your queries to verify the optimizer is using 
+# MAGIC > BroadcastHashJoin, filter pushdown, and column pruning.
+
+# COMMAND ----------
+
+# DBTITLE 1,Section D Header
+# MAGIC %md
+# MAGIC ---
+# MAGIC # Section D — Building Pipelines with Notebooks & Lakeflow
+# MAGIC
+# MAGIC > **Goal:** Structure multi-step data transformations into repeatable, monitored pipelines.
+# MAGIC > We'll implement the **same Bronze → Silver → Gold logic** as a Lakeflow Spark Declarative Pipeline.
+# MAGIC
+# MAGIC ### Two Approaches to Pipelines
+# MAGIC
+# MAGIC | Approach | Best for | Scheduling | Incremental? | Data Quality |
+# MAGIC |----------|---------|-----------|-------------|-------------|
+# MAGIC | **Notebook + Jobs** | Custom logic, ML, complex orchestration | Lakeflow Jobs triggers | Manual (you code it) | Manual checks |
+# MAGIC | **Lakeflow Pipelines (SDP)** | Standard ETL/ELT, medallion architecture | Built-in scheduling | Automatic | Built-in expectations |
+# MAGIC
+# MAGIC ### What is Lakeflow Spark Declarative Pipelines (SDP)?
+# MAGIC * You **declare** what your data should look like (schemas, quality rules)
+# MAGIC * The framework handles **execution, ordering, retries, and incremental processing**
+# MAGIC * Built-in **expectations** validate data quality at every step
+# MAGIC * Automatic **lineage tracking** and **monitoring UI**
+
+# COMMAND ----------
+
+# DBTITLE 1,D1 Notebook pipeline
+# MAGIC %md
+# MAGIC ## D.1 — Structuring Notebook-Based Pipelines (Jobs Orchestration)
+# MAGIC
+# MAGIC For the **notebook + Lakeflow Jobs** approach, you organize logic into separate notebooks
+# MAGIC and orchestrate them as tasks in a Job:
+# MAGIC
+# MAGIC ```
+# MAGIC enbridge_enablement/
+# MAGIC ├── pipelines/
+# MAGIC │   ├── 01_ingest_bronze.py    ← Task 1: Ingest CSVs to Bronze
+# MAGIC │   ├── 02_transform_silver.py ← Task 2: Clean & transform to Silver (depends on Task 1)
+# MAGIC │   └── 03_aggregate_gold.py   ← Task 3: Aggregate to Gold (depends on Task 2)
+# MAGIC └── Lesson_02_Building_Data_Pipelines.py  ← This notebook (workshop)
+# MAGIC ```
+# MAGIC
+# MAGIC **Sections A and B above already contain the code for each step.** In production, you would
+# MAGIC split those cells into separate notebooks and wire them as dependent tasks in a Lakeflow Job.
+# MAGIC
+# MAGIC > **💡 Key benefit of Jobs:** You can mix Python, SQL, and even R notebooks in the same
+# MAGIC > pipeline. You also get email/Slack notifications on success or failure.
+
+# COMMAND ----------
+
+# DBTITLE 1,D2 Lakeflow pipeline header
+# MAGIC %md
+# MAGIC ## D.2 — Lakeflow Spark Declarative Pipeline (SDP)
+# MAGIC
+# MAGIC Now let's implement the **same pipeline** as a Lakeflow pipeline. The code below shows
+# MAGIC what the pipeline source files would contain. In a real setup, you'd create these as separate
+# MAGIC files and attach them to a Lakeflow pipeline.
+# MAGIC
+# MAGIC ### Key SDP Concepts
+# MAGIC * **Streaming Tables** — for Bronze (incremental ingestion with Auto Loader)
+# MAGIC * **Materialized Views** — for Silver and Gold (auto-refresh on each pipeline run)
+# MAGIC * **Expectations** — built-in data quality rules that warn, drop, or fail on violations
+# MAGIC * **`STREAM`** keyword — reads data incrementally (only new rows since last run)
+# MAGIC
+# MAGIC > ⚠️ **Note:** The SQL below uses Lakeflow SDP syntax. It runs **inside a pipeline**, not as
+# MAGIC > standalone SQL. We show it here for learning — the actual pipeline would be created
+# MAGIC > separately and linked to these source files.
+
+# COMMAND ----------
+
+# DBTITLE 1,D2: SDP Bronze definition
+# MAGIC %sql
+# MAGIC -- ============================================================
+# MAGIC -- LAKEFLOW SDP: Bronze Layer (Streaming Tables with Auto Loader)
+# MAGIC -- ============================================================
+# MAGIC -- This is SDP syntax — runs inside a Lakeflow pipeline, not standalone.
+# MAGIC -- Copy this to a pipeline source file to use in production.
+# MAGIC
+# MAGIC -- UNCOMMENT the code below when running inside a Lakeflow pipeline:
+# MAGIC
+# MAGIC /*
+# MAGIC -- Bronze: Category Managed Suppliers (incremental ingestion)
+# MAGIC CREATE OR REFRESH STREAMING TABLE bronze_category_managed
+# MAGIC COMMENT 'Raw category-managed suppliers ingested incrementally from UC Volume'
+# MAGIC AS SELECT 
+# MAGIC   *,
+# MAGIC   _metadata.file_name AS source_file,
+# MAGIC   current_timestamp() AS ingested_at
+# MAGIC FROM STREAM read_files(
+# MAGIC   '/Volumes/serverless_stable_qr9if1_catalog/enbridge_scm/training/*Category Managed*.csv',
+# MAGIC   format => 'csv',
+# MAGIC   header => 'true'
+# MAGIC );
+# MAGIC
+# MAGIC -- Bronze: Regional Sourcing Suppliers
+# MAGIC CREATE OR REFRESH STREAMING TABLE bronze_regional_sourcing
+# MAGIC COMMENT 'Raw regional sourcing suppliers ingested incrementally from UC Volume'
+# MAGIC AS SELECT 
+# MAGIC   *,
+# MAGIC   _metadata.file_name AS source_file,
+# MAGIC   current_timestamp() AS ingested_at
+# MAGIC FROM STREAM read_files(
+# MAGIC   '/Volumes/serverless_stable_qr9if1_catalog/enbridge_scm/training/*Regional Sourcing*.csv',
+# MAGIC   format => 'csv',
+# MAGIC   header => 'true'
+# MAGIC );
+# MAGIC
+# MAGIC -- Bronze: Contracts
+# MAGIC CREATE OR REFRESH STREAMING TABLE bronze_contracts
+# MAGIC COMMENT 'Raw legal contracts ingested incrementally from UC Volume'
+# MAGIC AS SELECT 
+# MAGIC   *,
+# MAGIC   _metadata.file_name AS source_file,
+# MAGIC   current_timestamp() AS ingested_at
+# MAGIC FROM STREAM read_files(
+# MAGIC   '/Volumes/serverless_stable_qr9if1_catalog/enbridge_scm/training/Contracts.csv',
+# MAGIC   format => 'csv',
+# MAGIC   header => 'true'
+# MAGIC );
+# MAGIC */
+# MAGIC
+# MAGIC SELECT 'SDP Bronze definitions shown above (uncomment inside a pipeline)' AS note;
+
+# COMMAND ----------
+
+# DBTITLE 1,D2: SDP Silver with expectations
+# MAGIC %sql
+# MAGIC -- ============================================================
+# MAGIC -- LAKEFLOW SDP: Silver Layer (Materialized Views + Expectations)
+# MAGIC -- ============================================================
+# MAGIC -- Expectations are data quality rules that run on every pipeline update.
+# MAGIC -- Three modes:
+# MAGIC --   EXPECT     → warn only (log the violation, keep the row)
+# MAGIC --   EXPECT ... ON VIOLATION DROP ROW     → filter out bad rows
+# MAGIC --   EXPECT ... ON VIOLATION FAIL UPDATE  → stop the pipeline
+# MAGIC
+# MAGIC /*
+# MAGIC -- Silver: Unified Preferred Suppliers with quality checks
+# MAGIC CREATE OR REFRESH MATERIALIZED VIEW silver_preferred_suppliers (
+# MAGIC   -- EXPECTATIONS: Data quality rules
+# MAGIC   CONSTRAINT valid_supplier_number EXPECT (supplier_number IS NOT NULL) 
+# MAGIC     ON VIOLATION DROP ROW,
+# MAGIC   CONSTRAINT valid_supplier_name EXPECT (supplier_name IS NOT NULL AND TRIM(supplier_name) != '') 
+# MAGIC     ON VIOLATION DROP ROW,
+# MAGIC   CONSTRAINT known_business_unit EXPECT (bu_code IN ('LP', 'GTM', 'GDS', 'GPT'))
+# MAGIC     ON VIOLATION FAIL UPDATE
+# MAGIC )
+# MAGIC COMMENT 'Unified preferred suppliers with BU name resolution and data quality enforcement.'
+# MAGIC AS
+# MAGIC SELECT 
+# MAGIC   `Supplier Name` AS supplier_name,
+# MAGIC   CAST(`Supplier Number` AS INT) AS supplier_number,
+# MAGIC   `Business Unit` AS bu_code,
+# MAGIC   CASE `Business Unit`
+# MAGIC     WHEN 'LP'  THEN 'Liquids Pipelines'
+# MAGIC     WHEN 'GTM' THEN 'Gas Transmission'
+# MAGIC     WHEN 'GDS' THEN 'Enbridge Gas'
+# MAGIC     WHEN 'GPT' THEN 'Power Operations'
+# MAGIC     ELSE `Business Unit`
+# MAGIC   END AS business_unit_name,
+# MAGIC   `Region` AS region,
+# MAGIC   'Category Managed' AS supplier_type,
+# MAGIC   _metadata.file_name AS source_file
+# MAGIC FROM STREAM bronze_category_managed
+# MAGIC
+# MAGIC UNION ALL
+# MAGIC
+# MAGIC SELECT 
+# MAGIC   `Supplier Name` AS supplier_name,
+# MAGIC   CAST(`Supplier Number` AS INT) AS supplier_number,
+# MAGIC   `Business Unit` AS bu_code,
+# MAGIC   CASE `Business Unit`
+# MAGIC     WHEN 'LP'  THEN 'Liquids Pipelines'
+# MAGIC     WHEN 'GTM' THEN 'Gas Transmission'
+# MAGIC     WHEN 'GDS' THEN 'Enbridge Gas'
+# MAGIC     WHEN 'GPT' THEN 'Power Operations'
+# MAGIC     ELSE `Business Unit`
+# MAGIC   END AS business_unit_name,
+# MAGIC   `Region` AS region,
+# MAGIC   'Regional Sourcing' AS supplier_type,
+# MAGIC   _metadata.file_name AS source_file
+# MAGIC FROM STREAM bronze_regional_sourcing;
+# MAGIC */
+# MAGIC
+# MAGIC SELECT 'SDP Silver definitions with expectations shown above' AS note;
+
+# COMMAND ----------
+
+# DBTITLE 1,D2: SDP Gold definition
+# MAGIC %sql
+# MAGIC -- ============================================================
+# MAGIC -- LAKEFLOW SDP: Gold Layer (Materialized View - batch read)
+# MAGIC -- ============================================================
+# MAGIC -- Gold MVs read from Silver using batch (no STREAM keyword)
+# MAGIC -- because they aggregate the full dataset.
+# MAGIC
+# MAGIC /*
+# MAGIC -- Gold: Regional Supplier Coverage
+# MAGIC CREATE OR REFRESH MATERIALIZED VIEW gold_regional_supplier_coverage
+# MAGIC COMMENT 'Regional supplier coverage for dashboards. Auto-refreshed by pipeline.'
+# MAGIC AS
+# MAGIC SELECT 
+# MAGIC   bu_code,
+# MAGIC   business_unit_name,
+# MAGIC   region,
+# MAGIC   supplier_type,
+# MAGIC   COUNT(DISTINCT supplier_number) AS unique_suppliers,
+# MAGIC   COUNT(*) AS total_assignments
+# MAGIC FROM silver_preferred_suppliers
+# MAGIC GROUP BY bu_code, business_unit_name, region, supplier_type;
+# MAGIC
+# MAGIC -- Gold: Contract Analytics
+# MAGIC CREATE OR REFRESH MATERIALIZED VIEW gold_contract_analytics (
+# MAGIC   CONSTRAINT has_business_unit EXPECT (`business_unit` IS NOT NULL)
+# MAGIC )
+# MAGIC COMMENT 'Contract analytics by business unit. Gold layer.'
+# MAGIC AS
+# MAGIC SELECT 
+# MAGIC   `Enbridge Business Unit` AS business_unit,
+# MAGIC   `Contract Status` AS contract_status,
+# MAGIC   `Contract Type` AS contract_type,
+# MAGIC   COUNT(*) AS contract_count,
+# MAGIC   COUNT(DISTINCT `Contract Party Name`) AS unique_suppliers
+# MAGIC FROM bronze_contracts
+# MAGIC WHERE `Enbridge Business Unit` IS NOT NULL
+# MAGIC GROUP BY ALL;
+# MAGIC */
+# MAGIC
+# MAGIC SELECT 'SDP Gold definitions shown above' AS note;
+
+# COMMAND ----------
+
+# DBTITLE 1,D3 Expectations summary
+# MAGIC %md
+# MAGIC ## D.3 — Data Quality with Lakeflow Expectations
+# MAGIC
+# MAGIC Expectations are the built-in data validation feature of Lakeflow pipelines:
+# MAGIC
+# MAGIC | Mode | Behavior | Use when |
+# MAGIC |------|---------|----------|
+# MAGIC | `EXPECT (condition)` | **Warn** — log violation, keep the row | Non-critical checks (e.g., optional fields) |
+# MAGIC | `EXPECT ... ON VIOLATION DROP ROW` | **Quarantine** — drop failing rows | Data quality filters (e.g., NULL keys) |
+# MAGIC | `EXPECT ... ON VIOLATION FAIL UPDATE` | **Fail** — stop the entire pipeline | Critical invariants (e.g., unknown BU code) |
+# MAGIC
+# MAGIC ### Monitoring Expectations
+# MAGIC The Lakeflow pipeline UI shows:
+# MAGIC * **Pass/fail counts** per expectation per run
+# MAGIC * **Trend over time** — are quality issues increasing?
+# MAGIC * **Which rows were dropped** (in the event log)
+# MAGIC
+# MAGIC > **💡 Enbridge-specific example:** We set `known_business_unit` as `FAIL UPDATE` because
+# MAGIC > an unknown BU code means the data source changed and needs human review.
+
+# COMMAND ----------
+
+# DBTITLE 1,Section E Header
+# MAGIC %md
+# MAGIC ---
+# MAGIC # Section E — Monitoring, Re-runs & Troubleshooting
+# MAGIC
+# MAGIC > **Goal:** Learn how to monitor pipeline health, set up alerts, handle failures,
+# MAGIC > and support pipelines day-to-day.
+# MAGIC
+# MAGIC ### Key Operational Tasks
+# MAGIC * Check pipeline run history and status
+# MAGIC * Read logs to diagnose failures
+# MAGIC * Set up email/Slack alerts on failure
+# MAGIC * Re-run pipelines (full refresh vs. incremental)
+# MAGIC * Common troubleshooting patterns
+
+# COMMAND ----------
+
+# DBTITLE 1,E1 Monitoring guide
+# MAGIC %md
+# MAGIC ## E.1 — Monitoring Pipeline Runs
+# MAGIC
+# MAGIC ### For Notebook + Jobs Pipelines
+# MAGIC 1. **Lakeflow Jobs UI** → Click your job → see run history, duration, status
+# MAGIC 2. **Run details** → Click a run → see task-level logs, stdout/stderr
+# MAGIC 3. **API/CLI** → `databricks jobs list-runs --job-id <id>` for automation
+# MAGIC
+# MAGIC ### For Lakeflow Pipelines (SDP)
+# MAGIC 1. **Pipeline UI** → DAG view shows all datasets and their status
+# MAGIC 2. **Update history** → See every pipeline run with timing and row counts
+# MAGIC 3. **Event log** → Detailed events including expectation results
+# MAGIC 4. **Lineage** → Visual data flow from Bronze → Silver → Gold
+
+# COMMAND ----------
+
+# DBTITLE 1,E2: Query system tables for audit
+# MAGIC %sql
+# MAGIC -- ============================================================
+# MAGIC -- MONITORING: Query Table History for Audit Trail
+# MAGIC -- ============================================================
+# MAGIC -- Every Delta table maintains a transaction log. Use DESCRIBE HISTORY
+# MAGIC -- to see when tables were modified, by whom, and what operation.
+# MAGIC
+# MAGIC DESCRIBE HISTORY silver_preferred_suppliers LIMIT 10;
+
+# COMMAND ----------
+
+# DBTITLE 1,E2: Table detail info
+# MAGIC %sql
+# MAGIC -- ============================================================
+# MAGIC -- MONITORING: Table Size and File Statistics
+# MAGIC -- ============================================================
+# MAGIC -- Useful for capacity planning and identifying tables that need OPTIMIZE
+# MAGIC
+# MAGIC DESCRIBE DETAIL silver_preferred_suppliers;
+
+# COMMAND ----------
+
+# DBTITLE 1,E3 Alerts and re-runs
+# MAGIC %md
+# MAGIC ## E.2 — Alerts, Failure Handling & Re-runs
+# MAGIC
+# MAGIC ### Setting Up Alerts
+# MAGIC * **Lakeflow Jobs:** Configure email/webhook notifications in Job settings → "Notifications"
+# MAGIC * **Lakeflow Pipelines:** Built-in email alerts for pipeline failures
+# MAGIC * **Databricks SQL Alerts:** Create alerts on query results (e.g., "alert if data quality drops below 99%")
+# MAGIC
+# MAGIC ### Re-run Strategies
+# MAGIC
+# MAGIC | Scenario | Action | Impact |
+# MAGIC |----------|--------|--------|
+# MAGIC | Pipeline failed mid-run | **Re-run** (incremental) | Picks up where it left off |
+# MAGIC | Source data was corrected | **Re-run** (incremental) | Processes only new/changed data |
+# MAGIC | Schema changed upstream | **Full refresh** | Reprocesses everything (expensive!) |
+# MAGIC | Need to backfill historical data | **Full refresh** on specific tables | Targeted rebuild |
+# MAGIC
+# MAGIC ### Common Troubleshooting Patterns
+# MAGIC
+# MAGIC | Symptom | Likely cause | Fix |
+# MAGIC |---------|-------------|-----|
+# MAGIC | Pipeline stuck | Cluster starting or scaling | Wait; check cluster status |
+# MAGIC | Schema mismatch error | Source file format changed | Check `_rescued_data` column; update schema |
+# MAGIC | Expectation failure | Bad data in source | Review dropped rows; fix upstream |
+# MAGIC | OOM (Out of Memory) | Join explosion or large shuffle | Use broadcast joins; increase cluster size |
+# MAGIC | Duplicate rows | Missing deduplication logic | Add DISTINCT or window-based dedup |
+
+# COMMAND ----------
+
+# DBTITLE 1,Bonus Section Header
+# MAGIC %md
+# MAGIC ---
+# MAGIC # Bonus — Compute Selection for Performance & Cost
+# MAGIC
+# MAGIC > **Quick touchpoint** (if time permits): Understanding compute options helps match
+# MAGIC > the right resource to the right workload.
+# MAGIC
+# MAGIC | Compute Type | Best for | Cost model | Key trait |
+# MAGIC |-------------|---------|-----------|----------|
+# MAGIC | **All-Purpose Cluster** | Interactive development, notebooks | Per-minute (while running) | Full Spark, customizable |
+# MAGIC | **Jobs Cluster** | Scheduled pipelines, ETL | Per-minute (auto-terminates) | Cheaper than all-purpose |
+# MAGIC | **SQL Warehouse** | SQL queries, dashboards, Genie | Per-query (serverless) | Fastest startup, SQL-only |
+# MAGIC | **Serverless Compute** | Notebooks, Jobs (serverless) | Per-task | Zero config, fast startup |
+# MAGIC
+# MAGIC ### Matching Compute to Enbridge Workloads
+# MAGIC * **Interactive analysis** (ad-hoc queries on Gold tables) → SQL Warehouse (serverless)
+# MAGIC * **Scheduled ETL pipeline** (Bronze → Silver → Gold) → Jobs Cluster or Serverless
+# MAGIC * **Lakeflow Pipeline** → Managed compute (auto-scaled by the pipeline)
+# MAGIC * **Dashboard serving** → SQL Warehouse (serverless for best startup time)
+# MAGIC * **ML model training** → All-Purpose Cluster with GPU (if needed)
+
+# COMMAND ----------
+
+# DBTITLE 1,Exercise Section
+# MAGIC %md
+# MAGIC ---
+# MAGIC # 🎯 Hands-On Exercise
+# MAGIC
+# MAGIC Now it's your turn! Complete the following tasks:
+# MAGIC
+# MAGIC ### Exercise 1: Bronze Ingestion (10 min)
+# MAGIC Using the pattern from Section A.2, ingest the `Agreements - BPA.csv` file with:
+# MAGIC * A descriptive table comment
+# MAGIC * `source_file` and `ingested_at` metadata columns
+# MAGIC * Check the `_rescued_data` column for any schema issues
+# MAGIC
+# MAGIC ### Exercise 2: Silver Transformation (15 min)
+# MAGIC Create a `silver_contracts_cleaned` table from `bronze_contracts` that:
+# MAGIC * Applies Business Rule R4 (map BU code to full name)
+# MAGIC * Filters to only `Active` contracts
+# MAGIC * Adds a `contract_duration_days` column (`Contract End Date` - `Contract Start Date`)
+# MAGIC
+# MAGIC ### Exercise 3: Gold Aggregation (10 min)
+# MAGIC Create a `gold_supplier_agreements` table that joins:
+# MAGIC * `silver_preferred_suppliers` with `silver_agreements` on `supplier_number`
+# MAGIC * Aggregates: count of agreements per supplier per BU
+# MAGIC * Orders by total agreements descending
+# MAGIC
+# MAGIC ### 🌟 Stretch: Write an Expectation (5 min)
+# MAGIC Convert one of your tables to SDP syntax with an expectation that:
+# MAGIC * Drops rows where `supplier_number IS NULL`
+# MAGIC * Warns (but keeps) rows where `contract_duration_days < 0`
+
+# COMMAND ----------
+
+# DBTITLE 1,Lesson 2 Summary
+# MAGIC %md
+# MAGIC ---
+# MAGIC # ✅ Lesson 2 — Summary
+# MAGIC
+# MAGIC ### What We Built
+# MAGIC
+# MAGIC | Layer | Tables Created | Key techniques |
+# MAGIC |-------|---------------|----------------|
+# MAGIC | 🥉 Bronze | `bronze_agreements_bpa`, `bronze_agreements_cpa`, `bronze_contracts`, `bronze_category_managed`, `bronze_regional_sourcing` | `read_files()`, wildcard ingestion, rescued data, metadata columns |
+# MAGIC | 🥈 Silver | `silver_preferred_suppliers`, `silver_agreements` | Business rules R1-R5, UNION ALL, CTE, type casting, rescued data extraction |
+# MAGIC | 🥇 Gold | `gold_regional_supplier_coverage`, `gold_agreement_summary`, `gold_contract_analytics` | Aggregations, clustering, tags, column comments |
+# MAGIC | Views | `vw_active_contracts` | Logical views for reusable query patterns |
+# MAGIC
+# MAGIC ### Key Takeaways
+# MAGIC * **Unity Catalog** provides 3-level namespace, governance, and data quality enforcement
+# MAGIC * **Medallion architecture** (Bronze → Silver → Gold) separates raw ingestion from business logic
+# MAGIC * **Lakeflow Pipelines** automate the orchestration with built-in expectations and monitoring
+# MAGIC * **Performance techniques** (clustering, broadcast joins, CTEs) reduce cost and improve speed
+# MAGIC * **Monitoring** through table history, pipeline UI, and alerts keeps pipelines healthy
+# MAGIC
+# MAGIC ### ➡️ Next: Lesson 3 — Enabling Self-Service Analytics & AI for Business Users

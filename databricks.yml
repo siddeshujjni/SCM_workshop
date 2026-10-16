@@ -1,0 +1,32 @@
+bundle:
+  name: enbridge_scm_workshop
+
+include:
+  - resources/*.yml
+
+variables:
+  catalog:
+    description: Unity Catalog catalog for all pipeline tables
+    default: serverless_stable_qr9if1_catalog
+  schema:
+    description: Schema for Enbridge SCM tables (Bronze, Silver, Gold)
+    default: enbridge_scm
+  volume_path:
+    description: UC Volume path containing the source CSV files
+    default: /Volumes/serverless_stable_qr9if1_catalog/enbridge_scm/training
+
+targets:
+  dev:
+    default: true
+    mode: development
+    variables:
+      catalog: serverless_stable_qr9if1_catalog
+      schema: enbridge_scm
+
+  # Customer target - Enbridge overrides catalog/schema for their environment
+  enbridge:
+    mode: production
+    variables:
+      catalog: enbridge_prod_catalog     # <-- Enbridge to set their catalog
+      schema: enbridge_scm               # <-- Enbridge to set their schema
+      volume_path: /Volumes/enbridge_prod_catalog/enbridge_scm/training

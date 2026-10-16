@@ -1,0 +1,24 @@
+resources:
+  pipelines:
+    scm_preferred_supplier_pipeline:
+      name: Enbridge SCM - Preferred Supplier Pipeline
+      catalog: ${var.catalog}
+      target: ${var.schema}
+
+      libraries:
+        - glob:
+            include: ../src/pipeline/**
+
+      root_path: ../src/pipeline
+      serverless: true
+      continuous: false
+      development: true
+      photon: true
+      channel: current
+
+      configuration:
+        volume_path: ${var.volume_path}
+
+      permissions:
+        - level: CAN_VIEW
+          group_name: users
