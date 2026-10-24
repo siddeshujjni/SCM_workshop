@@ -4,14 +4,16 @@ resources:
       name: Enbridge SCM - Pipeline Refresh
       description: >
         Runs the Lakeflow SDP pipeline to refresh Bronze, Silver, Gold tables
-        incrementally. Scheduled daily at 6 AM Toronto time (paused automatically in dev mode).
+        incrementally. On-demand only (no schedule); uncomment the schedule block to automate.
       tasks:
         - task_key: run_pipeline
           pipeline_task:
             pipeline_id: ${resources.pipelines.scm_preferred_supplier_pipeline.id}
-      schedule:
-        quartz_cron_expression: 0 0 6 * * ?
-        timezone_id: America/Toronto
+      # Schedule disabled on purpose: the job only runs when triggered manually.
+      # To run daily at 6 AM Toronto time, uncomment the block below and redeploy.
+      # schedule:
+      #   quartz_cron_expression: 0 0 6 * * ?
+      #   timezone_id: America/Toronto
       permissions:
         - level: CAN_VIEW
           group_name: users
