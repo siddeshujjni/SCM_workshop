@@ -1,0 +1,8 @@
+resources:
+  schemas:
+    # Separate schema for pipeline-managed tables, so they don't collide with
+    # the tables the Lesson 2 notebook creates in ${var.schema}.
+    scm_pipeline_schema:
+      catalog_name: ${var.catalog}
+      name: ${var.pipeline_schema}
+      comment: Lakeflow SDP tables for the Enbridge SCM preferred supplier pipeline

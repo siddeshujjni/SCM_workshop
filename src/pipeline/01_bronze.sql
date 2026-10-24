@@ -41,36 +41,40 @@ FROM STREAM read_files(
 
 CREATE OR REFRESH STREAMING TABLE bronze_agreements_bpa
 COMMENT 'Raw Blanket Purchase Agreements from Oracle ENBOAC.'
+-- CSV headers contain spaces; column mapping lets Delta keep them as-is
+TBLPROPERTIES ('delta.columnMapping.mode' = 'name')
 AS SELECT
   *,
   _metadata.file_name AS source_file,
   current_timestamp() AS ingested_at
 FROM STREAM read_files(
-  '${volume_path}/Agreements - BPA.csv',
+  '${volume_path}/Agreements - BPA*.csv',  -- streaming read_files needs a directory or glob, not a single file
   format => 'csv',
   header => 'true'
 );
 
 CREATE OR REFRESH STREAMING TABLE bronze_agreements_cpa
 COMMENT 'Raw Contract Purchase Agreements from Oracle ENBOAC.'
+TBLPROPERTIES ('delta.columnMapping.mode' = 'name')
 AS SELECT
   *,
   _metadata.file_name AS source_file,
   current_timestamp() AS ingested_at
 FROM STREAM read_files(
-  '${volume_path}/Agreements - CPA.csv',
+  '${volume_path}/Agreements - CPA*.csv',
   format => 'csv',
   header => 'true'
 );
 
 CREATE OR REFRESH STREAMING TABLE bronze_contracts
 COMMENT 'Raw legal contracts from Oracle ENBOAC.'
+TBLPROPERTIES ('delta.columnMapping.mode' = 'name')
 AS SELECT
   *,
   _metadata.file_name AS source_file,
   current_timestamp() AS ingested_at
 FROM STREAM read_files(
-  '${volume_path}/Contracts.csv',
+  '${volume_path}/Contracts*.csv',
   format => 'csv',
   header => 'true'
 );
@@ -91,7 +95,7 @@ AS SELECT
   _metadata.file_name AS source_file,
   current_timestamp() AS ingested_at
 FROM STREAM read_files(
-  '${volume_path_psl}/Supplier Header Info (2).csv',
+  '${volume_path_psl}/Supplier Header Info*.csv',
   format => 'csv',
   header => 'true'
 );
@@ -125,7 +129,7 @@ AS SELECT
   _metadata.file_name AS source_file,
   current_timestamp() AS ingested_at
 FROM STREAM read_files(
-  '${volume_path_psl}/Enbridge Standard Terms and Conditions - Supplier Responses.csv',
+  '${volume_path_psl}/Enbridge Standard Terms and Conditions*.csv',
   format => 'csv',
   header => 'true'
 );

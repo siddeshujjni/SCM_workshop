@@ -3,7 +3,7 @@ resources:
     scm_preferred_supplier_pipeline:
       name: Enbridge SCM - Preferred Supplier Pipeline
       catalog: ${var.catalog}
-      target: ${var.schema}
+      schema: ${resources.schemas.scm_pipeline_schema.name}
 
       libraries:
         - glob:
@@ -12,7 +12,6 @@ resources:
       root_path: ../src/pipeline
       serverless: true
       continuous: false
-      development: true
       photon: true
       channel: current
 

@@ -8,14 +8,17 @@ CREATE OR REFRESH MATERIALIZED VIEW silver_preferred_suppliers (
     ON VIOLATION DROP ROW,
   CONSTRAINT valid_supplier_name EXPECT (supplier_name IS NOT NULL AND TRIM(supplier_name) != '')
     ON VIOLATION DROP ROW,
-  CONSTRAINT known_business_unit EXPECT (bu_code IN ('LP', 'GTM', 'GDS', 'GPT'))
+  -- Source has rows with no Business Unit: drop them, but fail if an unknown BU code appears
+  CONSTRAINT has_business_unit EXPECT (bu_code IS NOT NULL)
+    ON VIOLATION DROP ROW,
+  CONSTRAINT known_business_unit EXPECT (bu_code IS NULL OR bu_code IN ('LP', 'GTM', 'GDS', 'GPT'))
     ON VIOLATION FAIL UPDATE
 )
 COMMENT 'Unified preferred suppliers with BU name resolution (Rule R4) and data quality enforcement.'
 AS
 SELECT
   supplier_name,
-  CAST(supplier_number AS INT) AS supplier_number,
+  TRY_CAST(supplier_number AS INT) AS supplier_number,
   business_unit AS bu_code,
   -- Business Rule R4: Map BU code to full name
   CASE business_unit
@@ -34,7 +37,7 @@ UNION ALL
 
 SELECT
   supplier_name,
-  CAST(supplier_number AS INT) AS supplier_number,
+  TRY_CAST(supplier_number AS INT) AS supplier_number,
   business_unit AS bu_code,
   CASE business_unit
     WHEN 'LP'  THEN 'Liquids Pipelines'
@@ -60,10 +63,10 @@ AS
 WITH bpa AS (
   SELECT
     `Document Type` AS document_type,
-    CAST(`Supplier Number` AS INT) AS supplier_number,
+    TRY_CAST(`Supplier Number` AS INT) AS supplier_number,
     `Supplier` AS supplier_name,
     `Site` AS site,
-    `Agreement Number` AS agreement_number,
+    CAST(`Agreement Number` AS STRING) AS agreement_number,  -- BPA infers STRING, CPA infers BIGINT
     `Agreement Status Lookup Code` AS agreement_status,
     `Report Date` AS report_start_date,
     `Preferred Status` AS preferred_status,
@@ -73,10 +76,10 @@ WITH bpa AS (
 cpa AS (
   SELECT
     `Document Type` AS document_type,
-    CAST(`Supplier Number` AS INT) AS supplier_number,
+    TRY_CAST(`Supplier Number` AS INT) AS supplier_number,
     `Supplier` AS supplier_name,
     `Site` AS site,
-    `Agreement Number` AS agreement_number,
+    CAST(`Agreement Number` AS STRING) AS agreement_number,  -- BPA infers STRING, CPA infers BIGINT
     `Agreement Status Lookup Code` AS agreement_status,
     `Report Date` AS report_start_date,
     `Preferred Status` AS preferred_status,

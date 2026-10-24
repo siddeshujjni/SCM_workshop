@@ -9,8 +9,11 @@ variables:
     description: Unity Catalog catalog for all pipeline tables
     default: serverless_stable_qr9if1_catalog
   schema:
-    description: Schema for Enbridge SCM tables (Bronze, Silver, Gold)
+    description: Schema for Enbridge SCM tables created by the Lesson 2 notebook (must already contain the source volumes)
     default: enbridge_scm
+  pipeline_schema:
+    description: Schema created by this bundle for Lakeflow pipeline tables (kept separate from the notebook tables)
+    default: enbridge_scm_pipeline
   volume_path:
     description: UC Volume path containing the original source CSV files (Agreements, Contracts, Category Managed, Regional Sourcing)
     default: /Volumes/serverless_stable_qr9if1_catalog/enbridge_scm/training
@@ -29,6 +32,10 @@ targets:
   # Customer target - Enbridge overrides catalog/schema for their environment
   enbridge:
     mode: production
+    workspace:
+      # Production requires a fixed root_path. Deployed under the deploying user's folder;
+      # for a team setup, switch to a service principal with run_as.
+      root_path: /Workspace/Users/${workspace.current_user.userName}/.bundle/${bundle.name}/${bundle.target}
     variables:
       catalog: enbridge_prod_catalog     # <-- Enbridge to set their catalog
       schema: enbridge_scm               # <-- Enbridge to set their schema
