@@ -47,3 +47,38 @@ SELECT
 FROM bronze_contracts
 WHERE `Enbridge Business Unit` IS NOT NULL
 GROUP BY ALL;
+
+-- ============================================================
+-- ENRICHED GOLD TABLES (from PSL Dashboard volume)
+-- ============================================================
+
+CREATE OR REFRESH MATERIALIZED VIEW gold_category_coverage
+COMMENT 'L3 category coverage by business unit and region. Identifies supplier coverage gaps. Gold layer.'
+AS
+SELECT
+  bu_code,
+  business_unit_name,
+  region,
+  l3_category,
+  COUNT(DISTINCT supplier_number) AS unique_suppliers,
+  COUNT(DISTINCT contract_number) AS linked_contracts
+FROM silver_contract_mapping
+WHERE l3_category IS NOT NULL
+GROUP BY bu_code, business_unit_name, region, l3_category;
+
+CREATE OR REFRESH MATERIALIZED VIEW gold_supplier_compliance
+COMMENT 'Supplier compliance status for Enbridge Standard Terms and Conditions. Gold layer.'
+AS
+SELECT
+  supplier_name,
+  supplier_number,
+  question_name,
+  response_value,
+  response_date,
+  CASE
+    WHEN response_value = 'Yes' THEN 'Compliant'
+    WHEN response_value = 'No'  THEN 'Non-Compliant'
+    ELSE 'Pending'
+  END AS compliance_status
+FROM silver_supplier_responses
+WHERE supplier_number IS NOT NULL;

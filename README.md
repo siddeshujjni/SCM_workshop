@@ -23,14 +23,13 @@ databricks bundle run scm_pipeline_refresh --target dev
 SCM_workshop/
 ├── databricks.yml                            # Bundle config & variable definitions
 ├── README.md                                 # This file
-├── Training_Summary.md                       # Full training agenda, timing, implementation guide
 ├── resources/
 │   ├── scm_pipeline.pipeline.yml             # Lakeflow SDP pipeline definition
 │   └── scm_etl_job.job.yml                   # Jobs: training setup + daily refresh
 └── src/
     ├── notebooks/
-    │   ├── Lesson_02_Building_Data_Pipelines  # Hands-on: Bronze→Silver→Gold + governance
-    │   └── Lesson_03_Self_Service_Analytics_AI # Hands-on: Dashboards, Genie, MLflow, AI
+    │   ├── Lesson_02_Building_Data_Pipelines.ipynb   # Hands-on: 13 Bronze, 5 Silver, 6 Gold tables + governance
+    │   └── Lesson_03_Self_Service_Analytics_AI.ipynb # Hands-on: Dashboards, Genie, MLflow, AI
     └── pipeline/
         ├── 01_bronze.sql                      # SDP: 5 streaming tables (Auto Loader)
         ├── 02_silver.sql                      # SDP: 2 materialized views + expectations
@@ -52,7 +51,8 @@ SCM_workshop/
 |----------|---------|------------|
 | `catalog` | `serverless_stable_qr9if1_catalog` | Unity Catalog catalog |
 | `schema` | `enbridge_scm` | Target schema for all tables |
-| `volume_path` | `/Volumes/.../enbridge_scm/training` | UC Volume with source CSVs |
+| `volume_path` | `/Volumes/.../enbridge_scm/training` | UC Volume with original source CSVs |
+| `volume_path_psl` | `/Volumes/.../enbridge_scm/enbridge_psl_dashboard` | UC Volume with enriched PSL Dashboard files (CSV + Excel) |
 
 Override for your environment:
 ```yaml
@@ -67,9 +67,16 @@ targets:
 
 ## Prerequisites
 
-1. **Upload source data**: Place the 26 CSV files into the UC Volume at `${volume_path}`
+1. **Upload source data**: Place the 26 original CSVs in `${volume_path}` and the 17 PSL Dashboard files (CSV + Excel) in `${volume_path_psl}`
 2. **Workspace permissions**: Ability to create schemas, tables, and pipelines
 3. **Compute**: Serverless enabled (used by the pipeline)
+
+## Running the notebooks manually
+
+1. Open `src/notebooks/Lesson_02_Building_Data_Pipelines.ipynb`, attach serverless compute, set the `catalog` / `schema` widgets, and **Run all** (~3 min). This builds all 24 tables + 1 view.
+2. Open `src/notebooks/Lesson_03_Self_Service_Analytics_AI.ipynb` and run it (uses the tables from Lesson 2).
+
+Note: Lesson 2 hardcodes volume paths in its SQL cells (`/Volumes/serverless_stable_qr9if1_catalog/enbridge_scm/...`). In another workspace, find-and-replace the catalog name.
 
 ## Training Agenda
 

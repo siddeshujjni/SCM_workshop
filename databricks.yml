@@ -12,8 +12,11 @@ variables:
     description: Schema for Enbridge SCM tables (Bronze, Silver, Gold)
     default: enbridge_scm
   volume_path:
-    description: UC Volume path containing the source CSV files
+    description: UC Volume path containing the original source CSV files (Agreements, Contracts, Category Managed, Regional Sourcing)
     default: /Volumes/serverless_stable_qr9if1_catalog/enbridge_scm/training
+  volume_path_psl:
+    description: UC Volume path containing enriched PSL Dashboard files (Supplier Headers, Contract Mapping, PO Line Items, CM Excel lists, etc.)
+    default: /Volumes/serverless_stable_qr9if1_catalog/enbridge_scm/enbridge_psl_dashboard
 
 targets:
   dev:
@@ -30,3 +33,4 @@ targets:
       catalog: enbridge_prod_catalog     # <-- Enbridge to set their catalog
       schema: enbridge_scm               # <-- Enbridge to set their schema
       volume_path: /Volumes/enbridge_prod_catalog/enbridge_scm/training
+      volume_path_psl: /Volumes/enbridge_prod_catalog/enbridge_scm/enbridge_psl_dashboard

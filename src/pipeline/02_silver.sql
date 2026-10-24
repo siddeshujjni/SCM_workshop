@@ -86,3 +86,47 @@ cpa AS (
 SELECT * FROM bpa
 UNION ALL
 SELECT * FROM cpa;
+
+-- ============================================================
+-- ENRICHED SILVER TABLES (from PSL Dashboard volume)
+-- ============================================================
+
+CREATE OR REFRESH MATERIALIZED VIEW silver_contract_mapping (
+  CONSTRAINT valid_supplier EXPECT (supplier_number IS NOT NULL)
+    ON VIOLATION DROP ROW
+)
+COMMENT 'Cleaned contract-to-supplier mapping with BU name resolution (R4) and L3 category. Silver layer.'
+AS
+SELECT
+  business_unit AS bu_code,
+  CASE business_unit
+    WHEN 'LP'  THEN 'Liquids Pipelines'
+    WHEN 'GTM' THEN 'Gas Transmission'
+    WHEN 'GDS' THEN 'Enbridge Gas'
+    WHEN 'GPT' THEN 'Power Operations'
+    ELSE business_unit
+  END AS business_unit_name,
+  region,
+  supplier_name,
+  supplier_number,
+  contract_number,
+  l3_category,
+  source_file
+FROM bronze_contract_mapping
+WHERE supplier_number IS NOT NULL;
+
+CREATE OR REFRESH MATERIALIZED VIEW silver_supplier_responses (
+  CONSTRAINT valid_supplier EXPECT (supplier_number IS NOT NULL)
+    ON VIOLATION DROP ROW
+)
+COMMENT 'Cleaned supplier responses to Enbridge Standard Terms and Conditions. Silver layer.'
+AS
+SELECT
+  supplier_number,
+  supplier_name,
+  servicenow_number,
+  question_name,
+  response_value,
+  response_date
+FROM bronze_supplier_responses
+WHERE supplier_number IS NOT NULL;
