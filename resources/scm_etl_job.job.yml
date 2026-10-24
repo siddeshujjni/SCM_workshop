@@ -3,12 +3,18 @@ resources:
     scm_training_setup:
       name: Enbridge SCM - Training Setup (Bronze to Gold)
       description: >
-        Runs the Lesson 2 notebook end-to-end to create all Bronze, Silver,
-        and Gold tables for the Enbridge SCM enablement workshop.
+        Runs Lesson 2 end-to-end to create all Bronze, Silver, and Gold tables,
+        then Lesson 3 (dashboard queries, features, MLflow model) for the
+        Enbridge SCM enablement workshop.
       tasks:
         - task_key: lesson_02_pipeline
           notebook_task:
             notebook_path: ../src/notebooks/Lesson_02_Building_Data_Pipelines.ipynb
+        - task_key: lesson_03_analytics_ai
+          depends_on:
+            - task_key: lesson_02_pipeline
+          notebook_task:
+            notebook_path: ../src/notebooks/Lesson_03_Self_Service_Analytics_AI.ipynb
       parameters:
         - name: catalog
           default: ${var.catalog}
